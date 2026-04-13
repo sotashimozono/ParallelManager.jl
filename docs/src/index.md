@@ -1,7 +1,7 @@
-# MyModule.jl
+# ParallelManager.jl
 
 ## Models
 
 ```@autodocs
-Modules = [MyModule]
+Modules = [ParallelManager]
 ```
