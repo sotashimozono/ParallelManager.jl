@@ -1,0 +1,11 @@
+[study]
+project_name  = "pm_test"
+total_samples = 1
+outdir        = "out"
+
+[datavault]
+path_keys = ["N", "J"]
+
+[[paramsets]]
+N = [4, 8]
+J = [0.5, 1.0]
