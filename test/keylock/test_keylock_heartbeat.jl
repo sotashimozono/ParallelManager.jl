@@ -57,8 +57,7 @@ end
 
 @testset "with_key_lock: heartbeat task runs in background" begin
     mktempdir() do dir
-        l = KeyLock(joinpath(dir, "k.lock");
-                    stale_after=10.0, heartbeat_interval=0.2)
+        l = KeyLock(joinpath(dir, "k.lock"); stale_after=10.0, heartbeat_interval=0.2)
         mtimes = Float64[]
         with_key_lock(l) do
             push!(mtimes, mtime(heartbeat_path(l)))
@@ -116,19 +115,21 @@ end
         max_inside = Threads.Atomic{Int}(0)
         tasks = Task[]
         for _ in 1:50
-            push!(tasks, Threads.@spawn begin
-                l = KeyLock(lockdir; heartbeat_interval=10.0)
-                with_key_lock(l) do
-                    current = Threads.atomic_add!(inside, 1) + 1
-                    while true
-                        m = max_inside[]
-                        current <= m && break
-                        Threads.atomic_cas!(max_inside, m, current) == m && break
+            push!(
+                tasks, Threads.@spawn begin
+                    l = KeyLock(lockdir; heartbeat_interval=10.0)
+                    with_key_lock(l) do
+                        current = Threads.atomic_add!(inside, 1) + 1
+                        while true
+                            m = max_inside[]
+                            current <= m && break
+                            Threads.atomic_cas!(max_inside, m, current) == m && break
+                        end
+                        sleep(0.001)
+                        Threads.atomic_sub!(inside, 1)
                     end
-                    sleep(0.001)
-                    Threads.atomic_sub!(inside, 1)
                 end
-            end)
+            )
         end
         foreach(wait, tasks)
         @test max_inside[] == 1

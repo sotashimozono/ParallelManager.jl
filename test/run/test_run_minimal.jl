@@ -22,10 +22,11 @@ end
         @test length(keys) > 0
 
         counter = Ref(0)
-        work_fn = key -> begin
-            counter[] += 1
-            return Dict{String,Any}("result" => counter[], "N" => key.params["N"])
-        end
+        work_fn =
+            key -> begin
+                counter[] += 1
+                return Dict{String,Any}("result" => counter[], "N" => key.params["N"])
+            end
 
         result = run!(work_fn, v, keys)
         @test result.total == length(keys)

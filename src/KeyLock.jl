@@ -25,15 +25,18 @@ struct KeyLock
     heartbeat_interval::Float64
 end
 
-function KeyLock(dir::AbstractString; stale_after::Real=600.0,
-                 heartbeat_interval::Real=60.0)
-    KeyLock(String(dir),
-            string(gethostname(), ":", getpid()),
-            Float64(stale_after),
-            Float64(heartbeat_interval))
+function KeyLock(
+    dir::AbstractString; stale_after::Real=600.0, heartbeat_interval::Real=60.0
+)
+    KeyLock(
+        String(dir),
+        string(gethostname(), ":", getpid()),
+        Float64(stale_after),
+        Float64(heartbeat_interval),
+    )
 end
 
-holder_path(l::KeyLock)    = joinpath(l.dir, "holder")
+holder_path(l::KeyLock) = joinpath(l.dir, "holder")
 heartbeat_path(l::KeyLock) = joinpath(l.dir, "heartbeat")
 
 """

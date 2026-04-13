@@ -31,9 +31,10 @@ allk(v) = ParamIO.expand(v.spec)
         end
 
         # 4 masters racing on the same vault
-        tasks = [Threads.@spawn(run!(work_fn, v, keys;
-                                      opts=RunOpts(heartbeat_interval=10.0)))
-                 for _ in 1:4]
+        tasks = [
+            Threads.@spawn(run!(work_fn, v, keys; opts=RunOpts(heartbeat_interval=10.0)))
+            for _ in 1:4
+        ]
         foreach(wait, tasks)
 
         for k in keys
@@ -48,9 +49,10 @@ end
     with_vault_l() do v, outdir
         keys = allk(v)
         work_fn = k -> (sleep(0.02); Dict{String,Any}("x" => 1))
-        tasks = [Threads.@spawn(run!(work_fn, v, keys;
-                                      opts=RunOpts(heartbeat_interval=10.0)))
-                 for _ in 1:4]
+        tasks = [
+            Threads.@spawn(run!(work_fn, v, keys; opts=RunOpts(heartbeat_interval=10.0)))
+            for _ in 1:4
+        ]
         foreach(wait, tasks)
 
         lines = readlines(joinpath(outdir, "events.jsonl"))
@@ -121,8 +123,12 @@ end
 
         # Second run with working work_fn: should process the key
         counter = Ref(0)
-        run!(k -> (counter[] += 1; Dict{String,Any}("x" => 1)), v, keys;
-             opts=RunOpts(max_attempts=2))
+        run!(
+            k -> (counter[] += 1; Dict{String,Any}("x" => 1)),
+            v,
+            keys;
+            opts=RunOpts(max_attempts=2),
+        )
         @test counter[] == 1
         @test DataVault.is_done(v, keys[1])
     end

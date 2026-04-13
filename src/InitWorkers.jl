@@ -35,15 +35,16 @@ function init_workers!(; mode::Symbol=:auto, master_blas::Int=1, verbose::Bool=t
 
     elseif actual == :threads
         BLAS.set_num_threads(master_blas)
-        verbose && _log_init("threads", Threads.nthreads() - 1,
-                             master_blas, master_blas)
+        verbose && _log_init("threads", Threads.nthreads() - 1, master_blas, master_blas)
         return :threads
 
     elseif actual == :distributed
-        n_workers = parse(Int, get(ENV, "JULIA_SLURM_N_WORKERS",
-                                    get(ENV, "SLURM_NTASKS", "1")))
-        worker_blas = parse(Int, get(ENV, "JULIA_WORKER_CPUS",
-                                      get(ENV, "SLURM_CPUS_PER_TASK", "1")))
+        n_workers = parse(
+            Int, get(ENV, "JULIA_SLURM_N_WORKERS", get(ENV, "SLURM_NTASKS", "1"))
+        )
+        worker_blas = parse(
+            Int, get(ENV, "JULIA_WORKER_CPUS", get(ENV, "SLURM_CPUS_PER_TASK", "1"))
+        )
         if n_workers > 0 && nprocs() == 1
             project = dirname(Base.active_project())
             addprocs(n_workers; exeflags="--project=$project")
@@ -53,10 +54,12 @@ function init_workers!(; mode::Symbol=:auto, master_blas::Int=1, verbose::Bool=t
         return :distributed
 
     elseif actual == :slurm
-        n_workers = parse(Int, get(ENV, "JULIA_SLURM_N_WORKERS",
-                                    get(ENV, "SLURM_NTASKS", "0")))
-        worker_blas = parse(Int, get(ENV, "JULIA_WORKER_CPUS",
-                                      get(ENV, "SLURM_CPUS_PER_TASK", "1")))
+        n_workers = parse(
+            Int, get(ENV, "JULIA_SLURM_N_WORKERS", get(ENV, "SLURM_NTASKS", "0"))
+        )
+        worker_blas = parse(
+            Int, get(ENV, "JULIA_WORKER_CPUS", get(ENV, "SLURM_CPUS_PER_TASK", "1"))
+        )
         if n_workers > 0 && nprocs() == 1
             project = dirname(Base.active_project())
             mgr = withenv("SLURM_NTASKS" => string(n_workers)) do

@@ -23,16 +23,16 @@ mutable struct Manifest
     complete::Set{String}
 end
 
-Manifest(stage::Symbol, root::AbstractString) =
-    Manifest(stage, String(root), Set{String}())
+Manifest(stage::Symbol, root::AbstractString) = Manifest(stage, String(root), Set{String}())
 
 """
     manifest_path(root, stage)
 
 Return `<root>/<stage>/manifest.jld2`.
 """
-manifest_path(root::AbstractString, stage::Symbol) =
+function manifest_path(root::AbstractString, stage::Symbol)
     joinpath(String(root), String(stage), "manifest.jld2")
+end
 
 """
     load_manifest(root, stage) -> Manifest
@@ -101,8 +101,9 @@ is_complete(m::Manifest, key::DataKey) = canonical(key) in m.complete
 Return the subset of `keys` that are not yet complete — the work list for
 the next `run!`. Full-done case returns an empty vector (for early skip).
 """
-todo_keys(m::Manifest, keys::AbstractVector{DataKey}) =
+function todo_keys(m::Manifest, keys::AbstractVector{DataKey})
     [k for k in keys if !is_complete(m, k)]
+end
 
 export Manifest, manifest_path, load_manifest, save_manifest
 export add_complete!, is_complete, todo_keys

@@ -17,9 +17,18 @@ end
 @testset "EventLog: all standard event kinds" begin
     mktempdir() do dir
         log = EventLog(joinpath(dir, "events.jsonl"))
-        for k in (:stage_start, :stage_done, :key_start, :key_done,
-                  :lock_busy, :lock_reclaimed, :error, :gave_up, :retry,
-                  :skip_complete)
+        for k in (
+            :stage_start,
+            :stage_done,
+            :key_start,
+            :key_done,
+            :lock_busy,
+            :lock_reclaimed,
+            :error,
+            :gave_up,
+            :retry,
+            :skip_complete,
+        )
             log_event(log, k; info="test")
         end
         lines = readlines(log.path)

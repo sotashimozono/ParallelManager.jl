@@ -22,8 +22,12 @@ struct RunOpts
     heartbeat_interval::Float64
 end
 
-function RunOpts(; workers::Symbol=:auto, max_attempts::Int=3,
-                 stale_after::Real=600.0, heartbeat_interval::Real=60.0)
+function RunOpts(;
+    workers::Symbol=:auto,
+    max_attempts::Int=3,
+    stale_after::Real=600.0,
+    heartbeat_interval::Real=60.0,
+)
     RunOpts(workers, max_attempts, Float64(stale_after), Float64(heartbeat_interval))
 end
 
@@ -35,8 +39,9 @@ Lives under the vault outdir, keyed by canonical(key), so multiple masters
 on the same vault agree on the location without touching DataVault internals.
 """
 function _key_lock_dir(vault::Vault, key::DataKey)
-    joinpath(vault.outdir, "locks", vault.spec.study.project_name,
-             vault.run, canonical(key))
+    joinpath(
+        vault.outdir, "locks", vault.spec.study.project_name, vault.run, canonical(key)
+    )
 end
 
 """
@@ -45,8 +50,9 @@ end
 Where the ParallelManager manifest file lives for this vault.
 One manifest per (project, run).
 """
-manifest_root(vault::Vault) =
+function manifest_root(vault::Vault)
     joinpath(vault.outdir, "manifest", vault.spec.study.project_name)
+end
 
 """
     load_manifest(vault) -> Manifest
@@ -77,8 +83,9 @@ Contract:
 
 Sequential execution; multi-master locking is added in todo 11.
 """
-function run!(work_fn::Function, vault::Vault, keys::AbstractVector{DataKey};
-              opts::RunOpts=RunOpts())
+function run!(
+    work_fn::Function, vault::Vault, keys::AbstractVector{DataKey}; opts::RunOpts=RunOpts()
+)
     stage = Symbol(vault.run)
     log = EventLog(joinpath(vault.outdir, "events.jsonl"))
 
@@ -91,8 +98,7 @@ function run!(work_fn::Function, vault::Vault, keys::AbstractVector{DataKey};
         return (stage=stage, done=0, err=0, skipped=length(keys), total=length(keys))
     end
 
-    log_event(log, :stage_start; stage=stage,
-              total=length(keys), todo=length(todo))
+    log_event(log, :stage_start; stage=stage, total=length(keys), todo=length(todo))
 
     n_done = 0
     n_err = 0
@@ -100,9 +106,11 @@ function run!(work_fn::Function, vault::Vault, keys::AbstractVector{DataKey};
     n_gave_up = 0
     for key in todo
         kstr = canonical(key)
-        klock = KeyLock(_key_lock_dir(vault, key);
-                        stale_after=opts.stale_after,
-                        heartbeat_interval=opts.heartbeat_interval)
+        klock = KeyLock(
+            _key_lock_dir(vault, key);
+            stale_after=opts.stale_after,
+            heartbeat_interval=opts.heartbeat_interval,
+        )
 
         outcome = with_key_lock(klock) do
             # Re-check after acquiring the lock — another master may have
@@ -134,12 +142,26 @@ function run!(work_fn::Function, vault::Vault, keys::AbstractVector{DataKey};
     # Persist the updated manifest once per stage end
     save_manifest(m)
 
-    log_event(log, :stage_done; stage=stage, total=length(keys),
-              done=n_done, err=n_err, busy=n_busy, gave_up=n_gave_up,
-              skipped=length(keys) - length(todo))
-    return (stage=stage, done=n_done, err=n_err, busy=n_busy,
-            gave_up=n_gave_up, skipped=length(keys) - length(todo),
-            total=length(keys))
+    log_event(
+        log,
+        :stage_done;
+        stage=stage,
+        total=length(keys),
+        done=n_done,
+        err=n_err,
+        busy=n_busy,
+        gave_up=n_gave_up,
+        skipped=length(keys) - length(todo),
+    )
+    return (
+        stage=stage,
+        done=n_done,
+        err=n_err,
+        busy=n_busy,
+        gave_up=n_gave_up,
+        skipped=length(keys) - length(todo),
+        total=length(keys),
+    )
 end
 
 """
@@ -150,8 +172,15 @@ Execute `work_fn(key)` up to `opts.max_attempts` times. Returns:
   :gave_up  — all attempts failed, final `:gave_up` event logged
   :error    — single-attempt config (`max_attempts == 1`) that failed once
 """
-function _run_one_with_retry!(work_fn, vault::Vault, key::DataKey, kstr::String,
-                              stage::Symbol, log::EventLog, opts::RunOpts)
+function _run_one_with_retry!(
+    work_fn,
+    vault::Vault,
+    key::DataKey,
+    kstr::String,
+    stage::Symbol,
+    log::EventLog,
+    opts::RunOpts,
+)
     last_err = nothing
     for attempt in 1:opts.max_attempts
         log_event(log, :key_start; stage=stage, key=kstr, attempt=attempt)
@@ -164,22 +193,22 @@ function _run_one_with_retry!(work_fn, vault::Vault, key::DataKey, kstr::String,
             )
             DataVault.save!(vault, key, payload)
             DataVault.mark_done!(vault, key)
-            log_event(log, :key_done; stage=stage, key=kstr,
-                      secs=time() - t0, attempt=attempt)
+            log_event(
+                log, :key_done; stage=stage, key=kstr, secs=time() - t0, attempt=attempt
+            )
             return :ok
         catch e
             last_err = sprint(showerror, e)
-            log_event(log, :error; stage=stage, key=kstr,
-                      attempt=attempt, err=last_err)
+            log_event(log, :error; stage=stage, key=kstr, attempt=attempt, err=last_err)
             if attempt < opts.max_attempts
-                log_event(log, :retry; stage=stage, key=kstr,
-                          next_attempt=attempt + 1)
+                log_event(log, :retry; stage=stage, key=kstr, next_attempt=attempt + 1)
                 sleep(0.1 * attempt)  # linear backoff
             end
         end
     end
-    log_event(log, :gave_up; stage=stage, key=kstr,
-              attempts=opts.max_attempts, err=last_err)
+    log_event(
+        log, :gave_up; stage=stage, key=kstr, attempts=opts.max_attempts, err=last_err
+    )
     return opts.max_attempts == 1 ? :error : :gave_up
 end
 

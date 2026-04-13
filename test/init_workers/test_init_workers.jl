@@ -50,9 +50,9 @@ end
 @testset "init_workers!: :slurm env reading (no actual addprocs)" begin
     # We cannot truly spawn a SLURM worker here. Instead, set
     # JULIA_SLURM_N_WORKERS=0 so addprocs is skipped but the code path runs.
-    withenv("SLURM_JOB_ID" => "1",
-            "JULIA_SLURM_N_WORKERS" => "0",
-            "JULIA_WORKER_CPUS" => "2") do
+    withenv(
+        "SLURM_JOB_ID" => "1", "JULIA_SLURM_N_WORKERS" => "0", "JULIA_WORKER_CPUS" => "2"
+    ) do
         m = init_workers!(mode=:slurm, verbose=false)
         @test m == :slurm
         # Master BLAS was set (worker count is 0, no @everywhere)
