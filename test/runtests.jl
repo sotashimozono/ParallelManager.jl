@@ -1,7 +1,7 @@
 ENV["GKSwstype"] = "100"
 
 using ParallelManager, Test
-const dirs = []
+const dirs = ["atomicio", "eventlog", "manifest", "keylock", "init_workers", "run"]
 
 const FIG_BASE = joinpath(pkgdir(ParallelManager), "docs", "src", "assets")
 const PATHS = Dict()
