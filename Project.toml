@@ -18,18 +18,16 @@ SlurmClusterManager = "c82cd089-7bf7-41d7-976b-6b5d413cbe0a"
 TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 
 [sources]
-# ParamIO is pinned to the `feat/canonical` branch until that PR merges.
-# After merge, remove `rev` so main is used.
-ParamIO   = {url = "git@github.com:sotashimozono/ParamIO.jl.git", rev = "feat/canonical"}
-DataVault = {url = "git@github.com:sotashimozono/DataVault.jl.git"}
+DataVault = {rev = "main", url = "git@github.com:sotashimozono/DataVault.jl.git"}
+ParamIO = {rev = "feat/canonical", url = "git@github.com:sotashimozono/ParamIO.jl.git"}
 
 [compat]
+DataVault = "0.4"
 Dates = "1.11"
 Distributed = "1.11"
 JLD2 = "0.6"
 JSON3 = "1"
 LinearAlgebra = "1.11"
-DataVault = "0.4"
 Logging = "1.11"
 ParamIO = "0.3"
 Printf = "1.11"
