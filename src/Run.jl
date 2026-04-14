@@ -5,7 +5,13 @@
 #   10: + Manifest (early skip)
 #   11: + KeyLock (multi-master)
 #   12: + retry
+#   13: + automatic `pmap(WorkerPool(workers()), ...)` dispatch when
+#       `nprocs() > 1`, so a single master can fan out over local
+#       `addprocs(n)` or a SLURM cluster allocated via
+#       `SlurmClusterManager`.  No per-file change needed in user
+#       compute scripts — they still call `run!(work_fn, vault, keys)`.
 
+using Distributed
 using DataVault
 using ParamIO: DataKey, canonical
 
@@ -71,7 +77,6 @@ Run `work_fn(key) -> Dict` for every `key` in `keys`, persisting through
 Early skip (todo 10): on startup a stage-level Manifest is loaded. Keys
 already in the manifest are skipped — when all keys are done, the second
 run-through takes O(1) filesystem operations regardless of `length(keys)`.
-This is the answer to 痛点 #6 (3600-file rescan every job).
 
 Contract:
 - `work_fn` is expected to be a pure function: given a `DataKey`, return a
@@ -81,7 +86,27 @@ Contract:
 - The stage label used for logging is `Symbol(vault.run)`.
 - Manifest is monotonic: saved at end-of-stage with every newly completed key.
 
-Sequential execution; multi-master locking is added in todo 11.
+# Parallel dispatch
+
+If `nprocs() > 1` (i.e. `init_workers!(mode=:distributed|:slurm)` has added
+worker processes), `run!` automatically fans out over the Distributed
+`WorkerPool(workers())` via `pmap`.  Each worker runs the per-key
+lock-acquire → `work_fn` → `DataVault.save!` → `mark_done!` pipeline
+independently.  All filesystem operations (lock mkdir, atomic JLD2 write,
+JSONL event log) are already NFS-safe, so concurrent workers inside one
+master are structurally consistent with multi-master operation.
+
+If only the master is active (`nprocs() == 1`), `run!` falls back to the
+sequential loop from todo 11.  This means the same compute.jl script is
+valid in three modes:
+
+1. No `init_workers!` call at all → sequential on the master.
+2. `init_workers!(mode=:distributed)` with `addprocs(n)` → local pmap fan-out.
+3. `init_workers!(mode=:slurm)` inside a SLURM job → cluster fan-out.
+
+Multi-master locking (several separate julia processes writing to the
+same vault) continues to work underneath either path because the lock
+layer uses `mkdir` / atomic `rename` only.
 """
 function run!(
     work_fn::Function, vault::Vault, keys::AbstractVector{DataKey}; opts::RunOpts=RunOpts()
@@ -100,31 +125,21 @@ function run!(
 
     log_event(log, :stage_start; stage=stage, total=length(keys), todo=length(todo))
 
+    # Dispatch strategy: use pmap when Distributed workers are present,
+    # otherwise the current sequential loop.
+    outcomes = if nprocs() > 1
+        _run_pmap!(work_fn, vault, todo, stage, log, opts)
+    else
+        _run_sequential!(work_fn, vault, todo, stage, log, opts)
+    end
+
+    # Aggregate outcomes into counters + manifest updates.
     n_done = 0
     n_err = 0
     n_busy = 0
     n_gave_up = 0
-    for key in todo
-        kstr = canonical(key)
-        klock = KeyLock(
-            _key_lock_dir(vault, key);
-            stale_after=opts.stale_after,
-            heartbeat_interval=opts.heartbeat_interval,
-        )
-
-        outcome = with_key_lock(klock) do
-            # Re-check after acquiring the lock — another master may have
-            # finished this key between our manifest read and lock acquire.
-            if DataVault.is_done(vault, key)
-                return :already_done
-            end
-            DataVault.mark_running!(vault, key)
-            return _run_one_with_retry!(work_fn, vault, key, kstr, stage, log, opts)
-        end
-
-        if outcome === nothing
-            # Another master is running this key
-            log_event(log, :lock_busy; stage=stage, key=kstr)
+    for (key, outcome) in outcomes
+        if outcome === :lock_busy
             n_busy += 1
         elseif outcome === :already_done
             add_complete!(m, key)
@@ -134,7 +149,7 @@ function run!(
         elseif outcome === :gave_up
             n_gave_up += 1
             n_err += 1
-        else  # :error (single-attempt failure)
+        else  # :error
             n_err += 1
         end
     end
@@ -162,6 +177,110 @@ function run!(
         skipped=length(keys) - length(todo),
         total=length(keys),
     )
+end
+
+"""
+    _run_one_with_lock!(work_fn, vault, key, stage, log, opts) -> (DataKey, Symbol)
+
+Execute the per-key pipeline: acquire the KeyLock, re-check completion,
+`mark_running!`, then `_run_one_with_retry!`.  Returns a `(key, outcome)`
+pair suitable for aggregation by the caller.
+
+Outcome symbols:
+- `:lock_busy`    — another master holds the lock, skipped.
+- `:already_done` — finished by a sibling master between the manifest
+                    read and the lock acquisition.
+- `:ok`           — `work_fn` succeeded and `mark_done!` was called.
+- `:error`        — single-attempt failure (`opts.max_attempts == 1`).
+- `:gave_up`      — all `opts.max_attempts` attempts failed.
+"""
+function _run_one_with_lock!(
+    work_fn::Function,
+    vault::Vault,
+    key::DataKey,
+    stage::Symbol,
+    log::EventLog,
+    opts::RunOpts,
+)
+    kstr = canonical(key)
+    klock = KeyLock(
+        _key_lock_dir(vault, key);
+        stale_after=opts.stale_after,
+        heartbeat_interval=opts.heartbeat_interval,
+    )
+
+    outcome = with_key_lock(klock) do
+        if DataVault.is_done(vault, key)
+            return :already_done
+        end
+        DataVault.mark_running!(vault, key)
+        return _run_one_with_retry!(work_fn, vault, key, kstr, stage, log, opts)
+    end
+
+    if outcome === nothing
+        log_event(log, :lock_busy; stage=stage, key=kstr)
+        return (key, :lock_busy)
+    end
+    return (key, outcome)
+end
+
+"""
+    _run_sequential!(work_fn, vault, todo, stage, log, opts) -> Vector{Tuple{DataKey,Symbol}}
+"""
+function _run_sequential!(
+    work_fn::Function,
+    vault::Vault,
+    todo::AbstractVector{DataKey},
+    stage::Symbol,
+    log::EventLog,
+    opts::RunOpts,
+)
+    return [_run_one_with_lock!(work_fn, vault, key, stage, log, opts) for key in todo]
+end
+
+"""
+    _run_pmap!(work_fn, vault, todo, stage, log, opts) -> Vector{Tuple{DataKey,Symbol}}
+
+Fan `todo` out across `WorkerPool(workers())` via `pmap`.  Each worker
+invokes `_run_one_with_lock!`, which serialises the per-key lock +
+`work_fn` + save pipeline on that worker.  Returns the list of
+`(key, outcome)` pairs for master-side aggregation.
+
+Failures inside `work_fn` are already caught by `_run_one_with_retry!`
+and turned into `(key, :gave_up)` / `(key, :error)`; we additionally set
+`pmap`'s `on_error = identity` so an unexpected thrown exception bubbles
+up as an `Exception` value in the outcomes vector rather than bringing
+down the whole fan-out, and we log + convert those to `:error`.
+"""
+function _run_pmap!(
+    work_fn::Function,
+    vault::Vault,
+    todo::AbstractVector{DataKey},
+    stage::Symbol,
+    log::EventLog,
+    opts::RunOpts,
+)
+    pool = WorkerPool(workers())
+    raw = pmap(pool, todo; on_error=identity) do key
+        _run_one_with_lock!(work_fn, vault, key, stage, log, opts)
+    end
+
+    # Normalise any thrown exceptions back to (key, :error) tuples.
+    out = Vector{Tuple{DataKey,Symbol}}(undef, length(todo))
+    @inbounds for i in eachindex(todo)
+        item = raw[i]
+        if item isa Tuple{DataKey,Symbol}
+            out[i] = item
+        else
+            # `pmap(; on_error = identity)` returns the exception value at
+            # this slot.  Log it and mark the key as :error.
+            kstr = canonical(todo[i])
+            err = sprint(showerror, item)
+            log_event(log, :error; stage=stage, key=kstr, attempt=0, err=err)
+            out[i] = (todo[i], :error)
+        end
+    end
+    return out
 end
 
 """
