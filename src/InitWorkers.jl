@@ -90,11 +90,31 @@ function init_workers!(;
         )
         if n_workers > 0 && nprocs() == 1
             project = dirname(Base.active_project())
-            mgr = withenv("SLURM_NTASKS" => string(n_workers)) do
-                SlurmClusterManager.SlurmManager(; launch_timeout=Float64(launch_timeout))
-            end
-            # Export JULIA_WORKER_TIMEOUT for the srun-spawned workers.
-            withenv("JULIA_WORKER_TIMEOUT" => string(worker_timeout)) do
+            # BOTH the `SlurmManager()` construction AND the
+            # `addprocs(mgr)` call must live inside the SAME
+            # `withenv("SLURM_NTASKS" => string(n_workers))` block.
+            #
+            # `SlurmClusterManager` reads `ENV["SLURM_NTASKS"]` lazily
+            # inside `launch(mgr, ...)` (i.e. during `addprocs`), not
+            # at constructor time.  If `addprocs` runs outside the
+            # withenv, SlurmManager sees the job-level `SLURM_NTASKS`
+            # (= master + workers) and tries to spawn one more worker
+            # than there is a task slot for.  The extra worker never
+            # arrives, the master blocks forever in `addprocs`, and
+            # in stdout this looks like "no output after precompile
+            # ok".  See FiniteTemperature.jl's reference
+            # `src/Parallel/Slurm.jl::init_slurm_workers!` for the
+            # working pattern we are porting here.
+            #
+            # `JULIA_WORKER_TIMEOUT` is nested inside the same block so
+            # srun-spawned workers inherit a longer handshake window.
+            withenv(
+                "SLURM_NTASKS" => string(n_workers),
+                "JULIA_WORKER_TIMEOUT" => string(worker_timeout),
+            ) do
+                mgr = SlurmClusterManager.SlurmManager(;
+                    launch_timeout=Float64(launch_timeout)
+                )
                 addprocs(mgr; exeflags="--project=$project")
             end
         end
