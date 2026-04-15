@@ -1,8 +1,9 @@
-# InitWorkers — unified worker bootstrap for Threads / Distributed / SLURM
+# InitWorkers — unified worker bootstrap for Threads / Distributed / SLURM.
 #
-# Absorbs the existing `HybridInit.init_hybrid_scm!` from
-# `Vault/.vault/templates/templateHPC.jl/src/parallel/init.jl` so that
-# templateHPC can be reduced to a thin wrapper.
+# Absorbs the SlurmClusterManager + addprocs + BLAS-tuning pattern that used
+# to live (in 60 lines) inside
+# `Vault/.vault/templates/templateHPC.jl/src/parallel/init.jl`, so that the
+# templateHPC scaffold can be reduced to a thin wrapper.
 
 using Distributed
 using LinearAlgebra
@@ -11,19 +12,77 @@ using SlurmClusterManager
 """
     init_workers!(; mode=:auto, master_blas=1, verbose=true) -> Symbol
 
-Bootstrap worker processes / threads according to `mode`. Returns the mode
-that was actually used.
+Bootstrap worker processes / threads according to `mode`, and return the
+mode actually used (useful when `mode=:auto`).
 
-- `:auto`       — pick `:slurm` if `SLURM_JOB_ID` is set, else `:threads` if
-                  `Threads.nthreads() > 1`, else `:sequential`
-- `:slurm`      — `addprocs(SlurmClusterManager.SlurmManager())` with BLAS
-                  tuning. Absorbs the existing `init_hybrid_scm!` pattern.
-- `:distributed`— `addprocs(JULIA_SLURM_N_WORKERS or 1)` single-node
-- `:threads`    — no-op; caller uses `Threads.@threads`
-- `:sequential` — no-op; caller iterates serially (debug / tests)
+# Modes
 
-Idempotent: calling multiple times with worker processes already present
-does not double-add. BLAS thread settings are always (re)applied.
+| `mode`        | Effect                                                              |
+| :------------ | :------------------------------------------------------------------ |
+| `:auto`       | Pick `:slurm` if `SLURM_JOB_ID` is set, `:threads` if `Threads.nthreads() > 1`, else `:sequential`. |
+| `:sequential` | No-op. Caller iterates serially. BLAS threads still set.           |
+| `:threads`    | No-op. Caller uses `Threads.@threads` on the existing thread pool. |
+| `:distributed`| `addprocs(n; exeflags="--project=...")` single-node, n from `JULIA_SLURM_N_WORKERS` / `SLURM_NTASKS` / `1`. |
+| `:slurm`      | `addprocs(SlurmClusterManager.SlurmManager())` using `JULIA_SLURM_N_WORKERS` workers; multi-node via the SLURM job's allocation. |
+
+# Environment variables consulted
+
+- `SLURM_JOB_ID`        — triggers `:slurm` under `:auto`
+- `JULIA_SLURM_N_WORKERS` — preferred worker count (set by the batch script
+                            before `taskset` launches julia, so it survives
+                            `srun`'s env rewrite)
+- `SLURM_NTASKS`        — fallback worker count
+- `JULIA_WORKER_CPUS`   — preferred BLAS thread count per worker
+- `SLURM_CPUS_PER_TASK` — fallback BLAS thread count per worker
+
+# Arguments
+
+- `master_blas::Int = 1` — BLAS threads on the master process. Usually 1
+  because the master coordinates and dispatches; workers do the linear
+  algebra.
+- `verbose::Bool = true` — print a one-line summary after initialization.
+  Not per-item output; this is a single block per job.
+
+# Idempotency
+
+Safe to call multiple times. If workers are already present (`nprocs() > 1`),
+the `addprocs` step is skipped; BLAS settings are always (re)applied.
+
+# Batch script contract for `:slurm`
+
+```bash
+#SBATCH -n (n_workers + 1)   # master(1) + workers
+#SBATCH -c <cpus_per_worker> # = worker BLAS threads
+
+export JULIA_SLURM_N_WORKERS=\$((SLURM_NTASKS - 1))
+export JULIA_WORKER_CPUS=\$SLURM_CPUS_PER_TASK
+
+taskset -c 0 julia --project runner.jl
+```
+
+`taskset -c 0` pins the master to core 0 at the process level (no nested
+`srun` job step, which would be confined to the parent step's cgroup and
+break worker binding). `SlurmClusterManager.SlurmManager()` then spawns
+workers across the allocated nodes via its internal `srun`.
+
+# Examples
+
+```julia
+# Let the environment decide:
+init_workers!(mode=:auto)
+
+# Force sequential execution for local debugging:
+init_workers!(mode=:sequential, verbose=false)
+
+# Distributed on a laptop with 4 workers:
+withenv("JULIA_SLURM_N_WORKERS" => "4") do
+    init_workers!(mode=:distributed)
+end
+```
+
+# See also
+
+[`detect_mode`](@ref) for the `:auto` resolution logic.
 """
 function init_workers!(; mode::Symbol=:auto, master_blas::Int=1, verbose::Bool=true)
     actual = mode == :auto ? detect_mode() : mode
@@ -79,7 +138,14 @@ end
 """
     detect_mode() -> Symbol
 
-Inspect the environment to choose a default mode.
+Inspect the environment to pick a default [`init_workers!`](@ref) mode:
+
+- `:slurm` if `SLURM_JOB_ID` is present in `ENV`,
+- `:threads` if `Threads.nthreads() > 1`,
+- `:sequential` otherwise.
+
+This is what `init_workers!(mode=:auto)` delegates to. Callers rarely
+need to invoke `detect_mode` directly; it is public mainly for tests.
 """
 function detect_mode()::Symbol
     haskey(ENV, "SLURM_JOB_ID") && return :slurm

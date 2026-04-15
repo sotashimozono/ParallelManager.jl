@@ -1,25 +1,60 @@
-# EventLog — structured JSONL event logging (痛点 #7)
+# EventLog — structured JSONL event logging.
 #
-# Do NOT add a per-item `println` API here. Structured events only.
-# The 300MB println logs in FiniteTemperature.jl came from per-item prints;
-# this module exists to make that impossible by design.
+# Per-item `println` logging is a non-goal and is not part of the public API.
+# FiniteTemperature.jl used to emit ~300 MB of job logs by printing a line
+# for every one of 3600 keys; switching to aggregated events collapses that
+# to ~1 event per key plus a handful of per-stage events.
 
 using Dates
 using JSON3
 
 """
-    EventLog(path)
+    EventLog(path::AbstractString)
 
-Append-only JSONL event log with thread-safe writes.
+Append-only JSONL event log with a thread-safe per-`EventLog` lock.
 
-Standard event kinds:
-  :stage_start, :stage_done
-  :key_start, :key_done
-  :lock_busy, :lock_reclaimed
-  :error, :gave_up, :retry
-  :skip_complete
+Each call to [`log_event`](@ref) writes one JSON object as a single line.
+Concurrent writes from multiple tasks (within one master) are serialized
+through an internal `ReentrantLock`. Concurrent writes from multiple
+_processes_ (separate masters) rely on POSIX `O_APPEND` atomicity, which
+is guaranteed for single `write` syscalls of length `< PIPE_BUF` (4 KiB);
+`log_event` composes each line as a single `String` and issues exactly
+one `write(io, line)` call to stay within that guarantee.
 
-Downstream code should use `log_event` and never `println` directly.
+# Fields
+
+- `path::String` — target JSONL file. Parent directory is created lazily on
+  first [`log_event`](@ref).
+- `lock::ReentrantLock` — protects appends from same-process races.
+
+# Event kinds used by `run!`
+
+[`run!`](@ref) emits the following `kind` values (as strings in the JSON):
+
+| kind            | when                                                              |
+| :-------------- | :---------------------------------------------------------------- |
+| `stage_start`   | once at the top of `run!` when `todo` is non-empty                |
+| `stage_done`    | once at the bottom of `run!` when `todo` was non-empty            |
+| `key_start`     | before each `work_fn(key)` attempt (includes `attempt` field)     |
+| `key_done`      | after a successful `work_fn(key)` (includes `secs`, `attempt`)    |
+| `lock_busy`     | `KeyLock.try_acquire` returned `false`                            |
+| `lock_reclaimed`| (reserved, not currently emitted)                                 |
+| `error`         | `work_fn` threw on this attempt                                   |
+| `retry`         | another attempt will follow                                       |
+| `gave_up`       | all `max_attempts` attempts exhausted                             |
+| `skip_complete` | full-done early exit (manifest had every key)                     |
+
+Downstream analysis (`jq`, DataFrame-based) can filter and aggregate over
+these kinds without ever parsing freeform text.
+
+# Example
+
+```julia
+log = EventLog("out/events.jsonl")
+log_event(log, :stage_start; stage=:phase1, todo=3600)
+# ... work ...
+log_event(log, :stage_done; stage=:phase1, done=3600, err=0)
+```
 """
 struct EventLog
     path::String
@@ -31,18 +66,34 @@ EventLog(path::AbstractString) = EventLog(String(path), ReentrantLock())
 """
     log_event(log, kind; kwargs...)
 
-Append one JSON object as a line to `log.path`. Always includes `ts` (ISO-8601)
-and `kind` (Symbol). Extra fields come from `kwargs`.
+Append one JSON object to `log.path` with fields `ts` (ISO-8601 local time),
+`kind` (the `Symbol` converted to `String`), and any additional key/value
+pairs passed via `kwargs`.
+
+The line is built in full (including the trailing newline) as a single
+`String`, then written with exactly one `write(io, line)` call inside an
+`open(path, "a")` block. This relies on POSIX `O_APPEND` atomicity so that
+cross-process writes do not tear each other's lines.
+
+```julia
+log_event(log, :key_done; stage=:phase1, key="N=8;J=1.0;#sample=1", secs=12.3)
+```
+
+produces one line like:
+
+```json
+{"ts":"2026-04-13T14:23:51.123","kind":"key_done","stage":"phase1","key":"N=8;J=1.0;#sample=1","secs":12.3}
+```
+
+Returns `nothing`.
 """
 function log_event(log::EventLog, kind::Symbol; kwargs...)
     rec = (; ts=string(now()), kind=String(kind), kwargs...)
-    # Build full line with newline and write in a single syscall so O_APPEND
-    # preserves line atomicity across processes (multi-master contention).
+    # Build the full line with newline so a single `write` is one atomic
+    # append on POSIX (given `O_APPEND` and size < PIPE_BUF).
     line = string(JSON3.write(rec), '\n')
     lock(log.lock) do
         mkpath(dirname(log.path))
-        # Open append mode, do one write, close. On POSIX, writes < PIPE_BUF
-        # (4096 bytes) with O_APPEND are atomic even across processes.
         open(log.path, "a") do io
             write(io, line)
         end
