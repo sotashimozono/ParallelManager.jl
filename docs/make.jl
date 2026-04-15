@@ -27,7 +27,13 @@ makedocs(;
         assets=["assets/favicon.ico", "assets/custom.css"],
     ),
     modules=[ParallelManager],
-    pages=["Home" => "index.md"],
+    pages=[
+        "Home" => "index.md",
+        "Quick start" => "quickstart.md",
+        "Architecture" => "architecture.md",
+        "API reference" => "api.md",
+        "Guides" => "guides.md",
+    ],
 )
 
 deploydocs(; repo="github.com/sotashimozono/ParallelManager.jl.git", devbranch="main")

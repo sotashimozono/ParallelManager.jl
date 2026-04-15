@@ -16,10 +16,29 @@ using DataVault
 using ParamIO: DataKey, canonical
 
 """
-    RunOpts(; workers=:auto, max_attempts=1, stale_after=600.0,
+    RunOpts(; workers=:auto, max_attempts=3, stale_after=600.0,
              heartbeat_interval=60.0)
 
-Execution options for `run!`.
+Execution options for [`run!`](@ref).
+
+# Fields
+
+- `workers::Symbol = :auto` — reserved for future dispatch. Currently
+  [`run!`](@ref) iterates sequentially and relies on the caller having
+  already invoked [`init_workers!`](@ref) as needed.
+- `max_attempts::Int = 3` — per-key retry budget. Set to `1` to disable
+  retry (a failed `work_fn` is logged as `:error` instead of `:gave_up`).
+- `stale_after::Float64 = 600.0` — seconds before another master can
+  reclaim a held lock as stale. Passed through to [`KeyLock`](@ref).
+- `heartbeat_interval::Float64 = 60.0` — how often the per-lock heartbeat
+  task refreshes its `heartbeat` file. Must be `<` `stale_after`.
+
+# Example
+
+```julia
+opts = RunOpts(max_attempts=5, stale_after=900.0, heartbeat_interval=30.0)
+ParallelManager.run!(work_fn, vault, keys; opts)
+```
 """
 struct RunOpts
     workers::Symbol
@@ -37,13 +56,10 @@ function RunOpts(;
     RunOpts(workers, max_attempts, Float64(stale_after), Float64(heartbeat_interval))
 end
 
-"""
-    _key_lock_dir(vault, key) -> String
-
-Return the per-(vault.run, key) lock directory path.
-Lives under the vault outdir, keyed by canonical(key), so multiple masters
-on the same vault agree on the location without touching DataVault internals.
-"""
+# Internal: per-(vault.run, key) lock directory path, keyed by
+# `canonical(key)` so multiple masters on the same vault agree on the
+# location without touching DataVault internals. Lives under the vault's
+# outdir so cleanup falls out of `rm -rf out/`.
 function _key_lock_dir(vault::Vault, key::DataKey)
     joinpath(
         vault.outdir, "locks", vault.spec.study.project_name, vault.run, canonical(key)
@@ -53,17 +69,26 @@ end
 """
     manifest_root(vault) -> String
 
-Where the ParallelManager manifest file lives for this vault.
-One manifest per (project, run).
+Return the directory under which [`run!`](@ref) and [`load_manifest`](@ref)
+look for this vault's `manifest.jld2` — one manifest per `(project, run)`.
+
+The layout is:
+
+    <vault.outdir>/manifest/<project_name>/<vault.run>/manifest.jld2
+
+Pure function; does not touch the filesystem.
 """
 function manifest_root(vault::Vault)
     joinpath(vault.outdir, "manifest", vault.spec.study.project_name)
 end
 
 """
-    load_manifest(vault) -> Manifest
+    load_manifest(vault::DataVault.Vault) -> Manifest
 
-Convenience overload that reads the manifest for `vault.run` under this vault.
+Convenience overload of the two-argument [`load_manifest`](@ref) that
+derives `(root, stage)` from a `DataVault.Vault`:
+
+    load_manifest(manifest_root(vault), Symbol(vault.run))
 """
 load_manifest(vault::Vault) = load_manifest(manifest_root(vault), Symbol(vault.run))
 

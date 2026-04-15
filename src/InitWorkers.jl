@@ -1,8 +1,9 @@
-# InitWorkers — unified worker bootstrap for Threads / Distributed / SLURM
+# InitWorkers — unified worker bootstrap for Threads / Distributed / SLURM.
 #
-# Absorbs the existing `HybridInit.init_hybrid_scm!` from
-# `Vault/.vault/templates/templateHPC.jl/src/parallel/init.jl` so that
-# templateHPC can be reduced to a thin wrapper.
+# Absorbs the SlurmClusterManager + addprocs + BLAS-tuning pattern that used
+# to live (in 60 lines) inside
+# `Vault/.vault/templates/templateHPC.jl/src/parallel/init.jl`, so that the
+# templateHPC scaffold can be reduced to a thin wrapper.
 
 using Distributed
 using LinearAlgebra
@@ -12,16 +13,10 @@ using SlurmClusterManager
     init_workers!(; mode=:auto, master_blas=1, launch_timeout=300.0,
                     worker_timeout=300, verbose=true) -> Symbol
 
-Bootstrap worker processes / threads according to `mode`. Returns the mode
-that was actually used.
+Bootstrap worker processes / threads according to `mode`, and return the
+mode actually used (useful when `mode=:auto`).
 
-- `:auto`       — pick `:slurm` if `SLURM_JOB_ID` is set, else `:threads` if
-                  `Threads.nthreads() > 1`, else `:sequential`
-- `:slurm`      — `addprocs(SlurmClusterManager.SlurmManager())` with BLAS
-                  tuning. Absorbs the existing `init_hybrid_scm!` pattern.
-- `:distributed`— `addprocs(JULIA_SLURM_N_WORKERS or 1)` single-node
-- `:threads`    — no-op; caller uses `Threads.@threads`
-- `:sequential` — no-op; caller iterates serially (debug / tests)
+# Modes
 
 # Timeouts (relevant to `:slurm` / `:distributed`)
 
@@ -130,7 +125,14 @@ end
 """
     detect_mode() -> Symbol
 
-Inspect the environment to choose a default mode.
+Inspect the environment to pick a default [`init_workers!`](@ref) mode:
+
+- `:slurm` if `SLURM_JOB_ID` is present in `ENV`,
+- `:threads` if `Threads.nthreads() > 1`,
+- `:sequential` otherwise.
+
+This is what `init_workers!(mode=:auto)` delegates to. Callers rarely
+need to invoke `detect_mode` directly; it is public mainly for tests.
 """
 function detect_mode()::Symbol
     haskey(ENV, "SLURM_JOB_ID") && return :slurm
