@@ -10,81 +10,40 @@ using LinearAlgebra
 using SlurmClusterManager
 
 """
-    init_workers!(; mode=:auto, master_blas=1, verbose=true) -> Symbol
+    init_workers!(; mode=:auto, master_blas=1, launch_timeout=300.0,
+                    worker_timeout=300, verbose=true) -> Symbol
 
 Bootstrap worker processes / threads according to `mode`, and return the
 mode actually used (useful when `mode=:auto`).
 
 # Modes
 
-| `mode`        | Effect                                                              |
-| :------------ | :------------------------------------------------------------------ |
-| `:auto`       | Pick `:slurm` if `SLURM_JOB_ID` is set, `:threads` if `Threads.nthreads() > 1`, else `:sequential`. |
-| `:sequential` | No-op. Caller iterates serially. BLAS threads still set.           |
-| `:threads`    | No-op. Caller uses `Threads.@threads` on the existing thread pool. |
-| `:distributed`| `addprocs(n; exeflags="--project=...")` single-node, n from `JULIA_SLURM_N_WORKERS` / `SLURM_NTASKS` / `1`. |
-| `:slurm`      | `addprocs(SlurmClusterManager.SlurmManager())` using `JULIA_SLURM_N_WORKERS` workers; multi-node via the SLURM job's allocation. |
+# Timeouts (relevant to `:slurm` / `:distributed`)
 
-# Environment variables consulted
+- `launch_timeout::Real = 300.0` — seconds the master will wait for
+  `SlurmClusterManager.SlurmManager` to produce worker addresses via
+  `srun`.  Large jobs (≳ 100 workers) with cold NFS package caches need
+  a substantially larger value than the SlurmManager default (60s).
+- `worker_timeout::Integer = 300` — value exported as
+  `JULIA_WORKER_TIMEOUT` so every freshly spawned Julia worker waits up
+  to this many seconds for the master to send its first handshake
+  message.  The built-in Distributed default is 60s, which is too
+  tight when 100+ workers race each other through
+  `_include_from_serialized` on a shared depot.
 
-- `SLURM_JOB_ID`        — triggers `:slurm` under `:auto`
-- `JULIA_SLURM_N_WORKERS` — preferred worker count (set by the batch script
-                            before `taskset` launches julia, so it survives
-                            `srun`'s env rewrite)
-- `SLURM_NTASKS`        — fallback worker count
-- `JULIA_WORKER_CPUS`   — preferred BLAS thread count per worker
-- `SLURM_CPUS_PER_TASK` — fallback BLAS thread count per worker
+Both defaults (300s) handle the 128-worker i8cpu case on ISSP System B
+comfortably.  Set lower values only for local debugging.
 
-# Arguments
-
-- `master_blas::Int = 1` — BLAS threads on the master process. Usually 1
-  because the master coordinates and dispatches; workers do the linear
-  algebra.
-- `verbose::Bool = true` — print a one-line summary after initialization.
-  Not per-item output; this is a single block per job.
-
-# Idempotency
-
-Safe to call multiple times. If workers are already present (`nprocs() > 1`),
-the `addprocs` step is skipped; BLAS settings are always (re)applied.
-
-# Batch script contract for `:slurm`
-
-```bash
-#SBATCH -n (n_workers + 1)   # master(1) + workers
-#SBATCH -c <cpus_per_worker> # = worker BLAS threads
-
-export JULIA_SLURM_N_WORKERS=\$((SLURM_NTASKS - 1))
-export JULIA_WORKER_CPUS=\$SLURM_CPUS_PER_TASK
-
-taskset -c 0 julia --project runner.jl
-```
-
-`taskset -c 0` pins the master to core 0 at the process level (no nested
-`srun` job step, which would be confined to the parent step's cgroup and
-break worker binding). `SlurmClusterManager.SlurmManager()` then spawns
-workers across the allocated nodes via its internal `srun`.
-
-# Examples
-
-```julia
-# Let the environment decide:
-init_workers!(mode=:auto)
-
-# Force sequential execution for local debugging:
-init_workers!(mode=:sequential, verbose=false)
-
-# Distributed on a laptop with 4 workers:
-withenv("JULIA_SLURM_N_WORKERS" => "4") do
-    init_workers!(mode=:distributed)
-end
-```
-
-# See also
-
-[`detect_mode`](@ref) for the `:auto` resolution logic.
+Idempotent: calling multiple times with worker processes already present
+does not double-add. BLAS thread settings are always (re)applied.
 """
-function init_workers!(; mode::Symbol=:auto, master_blas::Int=1, verbose::Bool=true)
+function init_workers!(;
+    mode::Symbol=:auto,
+    master_blas::Int=1,
+    launch_timeout::Real=300.0,
+    worker_timeout::Integer=300,
+    verbose::Bool=true,
+)
     actual = mode == :auto ? detect_mode() : mode
 
     if actual == :sequential
@@ -106,7 +65,12 @@ function init_workers!(; mode::Symbol=:auto, master_blas::Int=1, verbose::Bool=t
         )
         if n_workers > 0 && nprocs() == 1
             project = dirname(Base.active_project())
-            addprocs(n_workers; exeflags="--project=$project")
+            # Export JULIA_WORKER_TIMEOUT so the freshly spawned workers
+            # inherit a generous handshake window.  Distributed reads
+            # this env var at worker startup only.
+            withenv("JULIA_WORKER_TIMEOUT" => string(worker_timeout)) do
+                addprocs(n_workers; exeflags="--project=$project")
+            end
         end
         _apply_blas(master_blas, worker_blas)
         verbose && _log_init("distributed", n_workers, master_blas, worker_blas)
@@ -121,10 +85,33 @@ function init_workers!(; mode::Symbol=:auto, master_blas::Int=1, verbose::Bool=t
         )
         if n_workers > 0 && nprocs() == 1
             project = dirname(Base.active_project())
-            mgr = withenv("SLURM_NTASKS" => string(n_workers)) do
-                SlurmClusterManager.SlurmManager()
+            # BOTH the `SlurmManager()` construction AND the
+            # `addprocs(mgr)` call must live inside the SAME
+            # `withenv("SLURM_NTASKS" => string(n_workers))` block.
+            #
+            # `SlurmClusterManager` reads `ENV["SLURM_NTASKS"]` lazily
+            # inside `launch(mgr, ...)` (i.e. during `addprocs`), not
+            # at constructor time.  If `addprocs` runs outside the
+            # withenv, SlurmManager sees the job-level `SLURM_NTASKS`
+            # (= master + workers) and tries to spawn one more worker
+            # than there is a task slot for.  The extra worker never
+            # arrives, the master blocks forever in `addprocs`, and
+            # in stdout this looks like "no output after precompile
+            # ok".  See FiniteTemperature.jl's reference
+            # `src/Parallel/Slurm.jl::init_slurm_workers!` for the
+            # working pattern we are porting here.
+            #
+            # `JULIA_WORKER_TIMEOUT` is nested inside the same block so
+            # srun-spawned workers inherit a longer handshake window.
+            withenv(
+                "SLURM_NTASKS" => string(n_workers),
+                "JULIA_WORKER_TIMEOUT" => string(worker_timeout),
+            ) do
+                mgr = SlurmClusterManager.SlurmManager(;
+                    launch_timeout=Float64(launch_timeout)
+                )
+                addprocs(mgr; exeflags="--project=$project")
             end
-            addprocs(mgr; exeflags="--project=$project")
         end
         _apply_blas(master_blas, worker_blas)
         verbose && _log_init("slurm", n_workers, master_blas, worker_blas)

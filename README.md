@@ -4,6 +4,8 @@
 [![docs: dev](https://img.shields.io/badge/docs-dev-purple.svg)](https://codes.sota-shimozono.com/ParallelManager.jl/dev/)
 [![Julia](https://img.shields.io/badge/julia-v1.11+-9558b2.svg)](https://julialang.org)
 [![Code Style: Blue](https://img.shields.io/badge/Code%20Style-Blue-4495d1.svg)](https://github.com/invenia/BlueStyle)
+
+[![codecov](https://codecov.io/gh/sotashimozono/ParallelManager.jl/graph/badge.svg?token=0kGBejbpL8)](https://codecov.io/gh/sotashimozono/ParallelManager.jl)
 [![Build Status](https://github.com/sotashimozono/ParallelManager.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/sotashimozono/ParallelManager.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
