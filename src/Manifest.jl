@@ -68,8 +68,7 @@ mutable struct Manifest
     complete::Set{String}
 end
 
-Manifest(stage::Symbol, root::AbstractString) =
-    Manifest(stage, String(root), Set{String}())
+Manifest(stage::Symbol, root::AbstractString) = Manifest(stage, String(root), Set{String}())
 
 """
     manifest_path(root, stage) -> String
