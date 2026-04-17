@@ -184,20 +184,36 @@ Ported from FiniteTemperature.jl `Parallel/Slurm.jl::print_worker_identities`.
 function verify_workers!()
     nprocs() > 1 || return nothing
     println("\n--- Worker verification ---")
+    # The probe closure MUST be evaluated in the worker's Main module —
+    # otherwise it gets serialized under ParallelManager's scope and
+    # deserialization fails on workers that haven't loaded ParallelManager
+    # (a common setup when compute.jl loads the package only on the master
+    # before calling init_workers!).
     futures = [
-        @spawnat p begin
-            cpuset = "N/A"
-            try
-                for line in eachline("/proc/self/status")
-                    if startswith(line, "Cpus_allowed_list:")
-                        cpuset = strip(split(line, ":")[2])
-                        break
+        remotecall(
+            Core.eval,
+            p,
+            Main,
+            quote
+                local _cpuset = "N/A"
+                try
+                    for line in eachline("/proc/self/status")
+                        if startswith(line, "Cpus_allowed_list:")
+                            _cpuset = strip(split(line, ":")[2])
+                            break
+                        end
                     end
+                catch
                 end
-            catch
-            end
-            (myid(), gethostname(), Threads.nthreads(), BLAS.get_num_threads(), cpuset)
-        end for p in workers()
+                (
+                    Distributed.myid(),
+                    Base.gethostname(),
+                    Threads.nthreads(),
+                    LinearAlgebra.BLAS.get_num_threads(),
+                    _cpuset,
+                )
+            end,
+        ) for p in workers()
     ]
 
     for f in futures
