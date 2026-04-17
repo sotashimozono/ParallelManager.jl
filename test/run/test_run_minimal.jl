@@ -2,6 +2,12 @@ using ParallelManager, Test, DataVault, ParamIO, JSON3
 
 const FIXTURE_CFG = joinpath(@__DIR__, "fixtures", "study.toml")
 
+# Helper: read all lines from per-master event log files in a directory
+function _read_event_lines(outdir)
+    logs = filter(f -> startswith(f, "events_") && endswith(f, ".jsonl"), readdir(outdir))
+    vcat([readlines(joinpath(outdir, f)) for f in logs]...)
+end
+
 function with_run_vault(f; run::AbstractString="phase1")
     outdir = mktempdir()
     try
@@ -39,9 +45,8 @@ end
         end
 
         # Events are recorded
-        events_path = joinpath(outdir, "events.jsonl")
-        @test isfile(events_path)
-        lines = readlines(events_path)
+        lines = _read_event_lines(outdir)
+        @test !isempty(lines)
         kinds = [JSON3.read(l).kind for l in lines]
         @test "stage_start" in kinds
         @test "stage_done" in kinds
@@ -68,7 +73,7 @@ end
             @test DataVault.is_done(v, k)
         end
 
-        lines = readlines(joinpath(outdir, "events.jsonl"))
+        lines = _read_event_lines(outdir)
         kinds = [JSON3.read(l).kind for l in lines]
         @test "error" in kinds
     end

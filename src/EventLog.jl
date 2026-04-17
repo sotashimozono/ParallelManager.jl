@@ -101,4 +101,31 @@ function log_event(log::EventLog, kind::Symbol; kwargs...)
     return nothing
 end
 
-export EventLog, log_event
+"""
+    merge_event_logs(dir; output="events_merged.jsonl") -> String
+
+Merge all per-master event log files (`events_*.jsonl`) in `dir` into a
+single sorted file. Returns the output path.
+
+Each master writes to its own `events_<host>_<pid>.jsonl`; this function
+collects and sorts all lines by their `ts` field for post-hoc analysis.
+"""
+function merge_event_logs(dir::AbstractString; output::String="events_merged.jsonl")
+    logs = filter(readdir(dir)) do f
+        startswith(f, "events_") && endswith(f, ".jsonl") && f != output
+    end
+    all_lines = String[]
+    for f in logs
+        append!(all_lines, readlines(joinpath(dir, f)))
+    end
+    sort!(all_lines; by=l -> JSON3.read(l).ts)
+    outpath = joinpath(dir, output)
+    open(outpath, "w") do io
+        for l in all_lines
+            println(io, l)
+        end
+    end
+    return outpath
+end
+
+export EventLog, log_event, merge_event_logs

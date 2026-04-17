@@ -7,6 +7,7 @@
 
 using Distributed
 using LinearAlgebra
+using Printf
 using SlurmClusterManager
 
 """
@@ -73,7 +74,10 @@ function init_workers!(;
             end
         end
         _apply_blas(master_blas, worker_blas)
-        verbose && _log_init("distributed", n_workers, master_blas, worker_blas)
+        if verbose
+            _log_init("distributed", n_workers, master_blas, worker_blas)
+            verify_workers!()
+        end
         return :distributed
 
     elseif actual == :slurm
@@ -114,7 +118,10 @@ function init_workers!(;
             end
         end
         _apply_blas(master_blas, worker_blas)
-        verbose && _log_init("slurm", n_workers, master_blas, worker_blas)
+        if verbose
+            _log_init("slurm", n_workers, master_blas, worker_blas)
+            verify_workers!()
+        end
         return :slurm
 
     else
@@ -164,4 +171,48 @@ function _log_init(mode::String, n_workers::Int, master_blas::Int, worker_blas::
     return nothing
 end
 
-export init_workers!, detect_mode
+"""
+    verify_workers!()
+
+Probe each Distributed worker for hostname, Julia threads, BLAS threads,
+and CPU affinity. Prints a summary table and emits a `@warn` if any
+worker has `BLAS.get_num_threads() > 1` (a common cause of OpenBLAS
+segfaults in multi-process Julia).
+
+Ported from FiniteTemperature.jl `Parallel/Slurm.jl::print_worker_identities`.
+"""
+function verify_workers!()
+    nprocs() > 1 || return nothing
+    println("\n--- Worker verification ---")
+    futures = [
+        @spawnat p begin
+            cpuset = "N/A"
+            try
+                for line in eachline("/proc/self/status")
+                    if startswith(line, "Cpus_allowed_list:")
+                        cpuset = strip(split(line, ":")[2])
+                        break
+                    end
+                end
+            catch
+            end
+            (myid(), gethostname(), Threads.nthreads(), BLAS.get_num_threads(), cpuset)
+        end for p in workers()
+    ]
+
+    for f in futures
+        pid, host, nth, blas, cpuset = fetch(f)
+        @printf(
+            "  worker %d  host=%-12s  threads=%-3d  blas=%-3d  cpus=%s\n",
+            pid, host, nth, blas, cpuset
+        )
+        if blas > 1
+            @warn "Worker $pid: BLAS threads=$blas > 1 — OpenBLAS segfault risk"
+        end
+    end
+    println()
+    flush(stdout)
+    return nothing
+end
+
+export init_workers!, detect_mode, verify_workers!

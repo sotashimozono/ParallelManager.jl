@@ -2,6 +2,11 @@ using ParallelManager, Test, DataVault, ParamIO, JSON3
 
 const FIXTURE_CFG_L = joinpath(@__DIR__, "fixtures", "study.toml")
 
+function _read_event_lines_l(outdir)
+    logs = filter(f -> startswith(f, "events_") && endswith(f, ".jsonl"), readdir(outdir))
+    vcat([readlines(joinpath(outdir, f)) for f in logs]...)
+end
+
 function with_vault_l(f; run::AbstractString="phase1")
     outdir = mktempdir()
     try
@@ -55,7 +60,7 @@ end
         ]
         foreach(wait, tasks)
 
-        lines = readlines(joinpath(outdir, "events.jsonl"))
+        lines = _read_event_lines_l(outdir)
         kinds = [JSON3.read(l).kind for l in lines]
         # Either some locks were busy, or one master finished everything so
         # fast the others saw :skip_complete. Both are acceptable outcomes.
@@ -84,7 +89,7 @@ end
         @test attempts[] == 3
         @test DataVault.is_done(v, keys[1])
 
-        lines = readlines(joinpath(outdir, "events.jsonl"))
+        lines = _read_event_lines_l(outdir)
         kinds = [JSON3.read(l).kind for l in lines]
         @test "retry" in kinds
         @test !("gave_up" in kinds)
@@ -108,7 +113,7 @@ end
         m = load_manifest(v)
         @test !is_complete(m, keys[1])
 
-        lines = readlines(joinpath(outdir, "events.jsonl"))
+        lines = _read_event_lines_l(outdir)
         kinds = [JSON3.read(l).kind for l in lines]
         @test "gave_up" in kinds
     end
