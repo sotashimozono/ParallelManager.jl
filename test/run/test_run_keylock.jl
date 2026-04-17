@@ -125,6 +125,8 @@ end
         # First run: permanent failure
         run!(k -> error("x"), v, keys; opts=RunOpts(max_attempts=2))
         @test !DataVault.is_done(v, keys[1])
+        # .running should be cleaned up by try-finally, not orphaned
+        @test !DataVault.is_running(v, keys[1])
 
         # Second run with working work_fn: should process the key
         counter = Ref(0)
@@ -136,5 +138,16 @@ end
         )
         @test counter[] == 1
         @test DataVault.is_done(v, keys[1])
+    end
+end
+
+@testset "run! + retry: .running never orphaned on error" begin
+    with_vault_l() do v, outdir
+        keys = allk(v)
+        # All keys fail permanently
+        run!(k -> error("boom"), v, keys; opts=RunOpts(max_attempts=2))
+        for k in keys
+            @test !DataVault.is_running(v, k)
+        end
     end
 end
