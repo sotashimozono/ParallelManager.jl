@@ -50,11 +50,7 @@ end
 
         t0 = time()
         run_loop!(
-            k -> Dict{String,Any}("x" => 1),
-            v,
-            keys;
-            max_empty_rounds=2,
-            idle_sleep=0.1,
+            k -> Dict{String,Any}("x" => 1), v, keys; max_empty_rounds=2, idle_sleep=0.1
         )
         elapsed = time() - t0
         # Should exit after finding no work (early skip each round)

@@ -15,7 +15,9 @@ test_dirs = env["test_dirs"]
 
 println("=" ^ 60)
 println("  CI Environment: $(ARGS[1])")
-println("  mode=$mode  workers=$n_workers  masters=$n_masters  threads=$(Threads.nthreads())")
+println(
+    "  mode=$mode  workers=$n_workers  masters=$n_masters  threads=$(Threads.nthreads())"
+)
 println("=" ^ 60)
 
 # Export n_masters so test code can scale Threads.@spawn accordingly

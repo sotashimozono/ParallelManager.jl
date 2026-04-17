@@ -68,8 +68,7 @@ function RunOpts(;
 end
 
 # Internal: check if the stop flag has been raised.
-_is_stopped(opts::RunOpts)::Bool =
-    opts.stop_flag !== nothing && isfile(opts.stop_flag)
+_is_stopped(opts::RunOpts)::Bool = opts.stop_flag !== nothing && isfile(opts.stop_flag)
 
 # Internal: per-(vault.run, key) lock directory path, keyed by
 # `canonical(key)` so multiple masters on the same vault agree on the

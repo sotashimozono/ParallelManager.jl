@@ -204,7 +204,11 @@ function verify_workers!()
         pid, host, nth, blas, cpuset = fetch(f)
         @printf(
             "  worker %d  host=%-12s  threads=%-3d  blas=%-3d  cpus=%s\n",
-            pid, host, nth, blas, cpuset
+            pid,
+            host,
+            nth,
+            blas,
+            cpuset
         )
         if blas > 1
             @warn "Worker $pid: BLAS threads=$blas > 1 — OpenBLAS segfault risk"
