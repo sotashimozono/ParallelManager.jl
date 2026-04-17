@@ -35,11 +35,12 @@ using Distributed, LinearAlgebra
 
     # Sanity: workers really don't have ParallelManager
     worker_has_pm = remotecall_fetch(workers()[1]) do
-        Base.find_package("ParallelManager") !== nothing &&
-            haskey(Base.loaded_modules, Base.PkgId(
-                Base.UUID("be946ad2-3cb3-4b6e-8f7e-4a5ecc3c255b"),
-                "ParallelManager",
-            ))
+        Base.find_package("ParallelManager") !== nothing && haskey(
+            Base.loaded_modules,
+            Base.PkgId(
+                Base.UUID("be946ad2-3cb3-4b6e-8f7e-4a5ecc3c255b"), "ParallelManager"
+            ),
+        )
     end
     @test !worker_has_pm
 
@@ -56,7 +57,9 @@ using Distributed, LinearAlgebra
         @test true  # reached here → probe serialized/deserialized cleanly
     catch e
         @test false
-        @error "verify_workers! crashed on ParallelManager-less workers" exception=(e, catch_backtrace())
+        @error "verify_workers! crashed on ParallelManager-less workers" exception=(
+            e, catch_backtrace()
+        )
     finally
         rmprocs(workers())
     end

@@ -159,9 +159,11 @@ end
 
         # 8 concurrent threads, very aggressive heartbeat
         tasks = [
-            Threads.@spawn(run!(work_fn, v, keys;
-                                opts=RunOpts(heartbeat_interval=0.05, stale_after=1.0)))
-            for _ in 1:8
+            Threads.@spawn(
+                run!(
+                    work_fn, v, keys; opts=RunOpts(heartbeat_interval=0.05, stale_after=1.0)
+                )
+            ) for _ in 1:8
         ]
         foreach(wait, tasks)
 
@@ -217,11 +219,7 @@ end
 @testset "run!: all keys fail → no crash, all .running cleaned" begin
     with_vault_a() do v, outdir
         keys = allk_a(v)
-        result = run!(
-            k -> error("always fails"),
-            v, keys;
-            opts=RunOpts(max_attempts=2)
-        )
+        result = run!(k -> error("always fails"), v, keys; opts=RunOpts(max_attempts=2))
         @test result.done == 0
         @test result.gave_up == length(keys)
         # No .running orphans
