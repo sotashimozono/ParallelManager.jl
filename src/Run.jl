@@ -179,8 +179,9 @@ function run!(
         end
     end
 
-    # Persist the updated manifest once per stage end
-    save_manifest(m)
+    # Persist the updated manifest, merging with on-disk state so that
+    # concurrent masters don't overwrite each other's completed keys.
+    merge_and_save_manifest!(m)
 
     log_event(
         log,
@@ -239,7 +240,32 @@ function _run_one_with_lock!(
             return :already_done
         end
         DataVault.mark_running!(vault, key)
-        return _run_one_with_retry!(work_fn, vault, key, kstr, stage, log, opts)
+        # Background task: update .running heartbeat at the same interval
+        # as the KeyLock heartbeat so cleanup_stale can detect live jobs.
+        running_stop = Threads.Atomic{Bool}(false)
+        running_hb = Threads.@spawn begin
+            tick = 0.1
+            elapsed = 0.0
+            while !running_stop[]
+                sleep(tick)
+                running_stop[] && break
+                elapsed += tick
+                if elapsed >= opts.heartbeat_interval
+                    DataVault.touch_running!(vault, key)
+                    elapsed = 0.0
+                end
+            end
+        end
+        try
+            return _run_one_with_retry!(work_fn, vault, key, kstr, stage, log, opts)
+        finally
+            running_stop[] = true
+            try
+                wait(running_hb)
+            catch
+            end
+            DataVault.clear_running!(vault, key)
+        end
     end
 
     if outcome === nothing
