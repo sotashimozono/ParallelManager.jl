@@ -31,6 +31,10 @@ jobs:
             env_file: .github/ci/env_distributed_4.toml
             julia_threads: 1
             version: '1'
+          - env_name: distributed-master-only
+            env_file: .github/ci/env_distributed_master_only.toml
+            julia_threads: 1
+            version: '1'
           - env_name: stress
             env_file: .github/ci/env_stress.toml
             julia_threads: 8
