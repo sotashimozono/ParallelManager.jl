@@ -1,0 +1,6 @@
+# Env 4: 4 worker processes via addprocs — cross-process lock contention
+[env]
+mode = "distributed"
+n_workers = 4
+n_masters = 1
+test_dirs = ["run"]

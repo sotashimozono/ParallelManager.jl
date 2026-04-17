@@ -1,0 +1,6 @@
+# Env 3: 2 worker processes via addprocs — exercises pmap path
+[env]
+mode = "distributed"
+n_workers = 2
+n_masters = 1
+test_dirs = ["run"]
