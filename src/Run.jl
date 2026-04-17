@@ -17,7 +17,7 @@ using ParamIO: DataKey, canonical
 
 """
     RunOpts(; workers=:auto, max_attempts=3, stale_after=600.0,
-             heartbeat_interval=60.0)
+             heartbeat_interval=60.0, stop_flag=nothing)
 
 Execution options for [`run!`](@ref).
 
@@ -32,11 +32,18 @@ Execution options for [`run!`](@ref).
   reclaim a held lock as stale. Passed through to [`KeyLock`](@ref).
 - `heartbeat_interval::Float64 = 60.0` — how often the per-lock heartbeat
   task refreshes its `heartbeat` file. Must be `<` `stale_after`.
+- `stop_flag::Union{String,Nothing} = nothing` — path to a sentinel file.
+  When `isfile(stop_flag)` becomes true, [`run!`](@ref) and
+  [`run_loop!`](@ref) stop dispatching new keys and return early. This is
+  the infra equivalent of FiniteTemperature.jl's `STOP_NOW_\$JOB_ID`
+  mechanism, typically created by a SIGUSR1 signal handler in the batch
+  script 60 s before Slurm kills the job.
 
 # Example
 
 ```julia
-opts = RunOpts(max_attempts=5, stale_after=900.0, heartbeat_interval=30.0)
+opts = RunOpts(max_attempts=5, stale_after=900.0, heartbeat_interval=30.0,
+               stop_flag="/path/to/STOP_NOW_12345")
 ParallelManager.run!(work_fn, vault, keys; opts)
 ```
 """
@@ -45,6 +52,7 @@ struct RunOpts
     max_attempts::Int
     stale_after::Float64
     heartbeat_interval::Float64
+    stop_flag::Union{String,Nothing}
 end
 
 function RunOpts(;
@@ -52,9 +60,15 @@ function RunOpts(;
     max_attempts::Int=3,
     stale_after::Real=600.0,
     heartbeat_interval::Real=60.0,
+    stop_flag::Union{String,Nothing}=nothing,
 )
-    RunOpts(workers, max_attempts, Float64(stale_after), Float64(heartbeat_interval))
+    RunOpts(
+        workers, max_attempts, Float64(stale_after), Float64(heartbeat_interval), stop_flag
+    )
 end
+
+# Internal: check if the stop flag has been raised.
+_is_stopped(opts::RunOpts)::Bool = opts.stop_flag !== nothing && isfile(opts.stop_flag)
 
 # Internal: per-(vault.run, key) lock directory path, keyed by
 # `canonical(key)` so multiple masters on the same vault agree on the
@@ -137,7 +151,8 @@ function run!(
     work_fn::Function, vault::Vault, keys::AbstractVector{DataKey}; opts::RunOpts=RunOpts()
 )
     stage = Symbol(vault.run)
-    log = EventLog(joinpath(vault.outdir, "events.jsonl"))
+    log_name = "events_$(gethostname())_$(getpid()).jsonl"
+    log = EventLog(joinpath(vault.outdir, log_name))
 
     # Early skip: load manifest, subtract completed keys
     m = load_manifest(vault)
@@ -163,6 +178,7 @@ function run!(
     n_err = 0
     n_busy = 0
     n_gave_up = 0
+    n_stop = 0
     for (key, outcome) in outcomes
         if outcome === :lock_busy
             n_busy += 1
@@ -171,6 +187,8 @@ function run!(
         elseif outcome === :ok
             add_complete!(m, key)
             n_done += 1
+        elseif outcome === :stop
+            n_stop += 1
         elseif outcome === :gave_up
             n_gave_up += 1
             n_err += 1
@@ -192,6 +210,7 @@ function run!(
         err=n_err,
         busy=n_busy,
         gave_up=n_gave_up,
+        stop=n_stop,
         skipped=length(keys) - length(todo),
     )
     return (
@@ -200,6 +219,7 @@ function run!(
         err=n_err,
         busy=n_busy,
         gave_up=n_gave_up,
+        stop=n_stop,
         skipped=length(keys) - length(todo),
         total=length(keys),
     )
@@ -219,6 +239,7 @@ Outcome symbols:
 - `:ok`           — `work_fn` succeeded and `mark_done!` was called.
 - `:error`        — single-attempt failure (`opts.max_attempts == 1`).
 - `:gave_up`      — all `opts.max_attempts` attempts failed.
+- `:stop`         — stop flag detected before work started.
 """
 function _run_one_with_lock!(
     work_fn::Function,
@@ -229,6 +250,13 @@ function _run_one_with_lock!(
     opts::RunOpts,
 )
     kstr = canonical(key)
+
+    # Early exit if stop flag has been raised (checked by both sequential
+    # and pmap paths, so each worker can bail independently).
+    if _is_stopped(opts)
+        return (key, :stop)
+    end
+
     klock = KeyLock(
         _key_lock_dir(vault, key);
         stale_after=opts.stale_after,
@@ -286,7 +314,14 @@ function _run_sequential!(
     log::EventLog,
     opts::RunOpts,
 )
-    return [_run_one_with_lock!(work_fn, vault, key, stage, log, opts) for key in todo]
+    results = Vector{Tuple{DataKey,Symbol}}()
+    for key in todo
+        if _is_stopped(opts)
+            break
+        end
+        push!(results, _run_one_with_lock!(work_fn, vault, key, stage, log, opts))
+    end
+    return results
 end
 
 """
@@ -382,4 +417,46 @@ function _run_one_with_retry!(
     return opts.max_attempts == 1 ? :error : :gave_up
 end
 
-export RunOpts, run!, manifest_root, load_manifest
+"""
+    run_loop!(work_fn, vault, keys; opts=RunOpts(),
+              max_empty_rounds=3, idle_sleep=30.0)
+
+Work-stealing loop that repeatedly calls [`run!`](@ref) until there is no
+more work to do. This is the infra equivalent of FiniteTemperature.jl's
+`_work_loop` driver.
+
+The loop exits when:
+- `max_empty_rounds` consecutive rounds produce zero new completions, or
+- `opts.stop_flag` is raised (graceful shutdown).
+
+Default parameters (`max_empty_rounds=3`, `idle_sleep=30.0`) are the
+battle-tested values from FiniteTemperature.jl.
+"""
+function run_loop!(
+    work_fn::Function,
+    vault::Vault,
+    keys::AbstractVector{DataKey};
+    opts::RunOpts=RunOpts(),
+    max_empty_rounds::Int=3,
+    idle_sleep::Float64=30.0,
+)
+    empty_count = 0
+    while true
+        if _is_stopped(opts)
+            break
+        end
+        result = run!(work_fn, vault, keys; opts=opts)
+        if result.done > 0
+            empty_count = 0
+            continue
+        end
+        empty_count += 1
+        if empty_count >= max_empty_rounds
+            break
+        end
+        sleep(idle_sleep)
+    end
+    return nothing
+end
+
+export RunOpts, run!, run_loop!, manifest_root, load_manifest

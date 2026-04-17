@@ -99,3 +99,30 @@ end
         @test is_complete(m, k_b)
     end
 end
+
+@testset "merge_and_save_manifest!: merges on-disk + in-memory" begin
+    mktempdir() do dir
+        ka = mkkey(["N" => 4, "J" => 0.5])
+        kb = mkkey(["N" => 4, "J" => 1.0])
+        kc = mkkey(["N" => 8, "J" => 0.5])
+
+        # Master A: saves {a, b} to disk
+        m_a = load_manifest(dir, :phase1)
+        add_complete!(m_a, ka)
+        add_complete!(m_a, kb)
+        save_manifest(m_a)
+
+        # Master B: has {b, c} in memory (b overlaps with A)
+        m_b = Manifest(:phase1, dir)
+        add_complete!(m_b, kb)
+        add_complete!(m_b, kc)
+        merge_and_save_manifest!(m_b)
+
+        # Reload: should contain {a, b, c}
+        m_final = load_manifest(dir, :phase1)
+        @test is_complete(m_final, ka)
+        @test is_complete(m_final, kb)
+        @test is_complete(m_final, kc)
+        @test length(m_final.complete) == 3
+    end
+end
