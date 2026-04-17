@@ -2,6 +2,11 @@ using ParallelManager, Test, DataVault, ParamIO, JSON3
 
 const FIXTURE_CFG_M = joinpath(@__DIR__, "fixtures", "study.toml")
 
+function _read_event_lines_m(outdir)
+    logs = filter(f -> startswith(f, "events_") && endswith(f, ".jsonl"), readdir(outdir))
+    vcat([readlines(joinpath(outdir, f)) for f in logs]...)
+end
+
 function with_vault_m(f; run::AbstractString="phase1")
     outdir = mktempdir()
     try
@@ -50,7 +55,7 @@ end
         @test elapsed < 1.0  # early skip is fast
 
         # events.jsonl has :skip_complete
-        lines = readlines(joinpath(outdir, "events.jsonl"))
+        lines = _read_event_lines_m(outdir)
         kinds = [JSON3.read(l).kind for l in lines]
         @test "skip_complete" in kinds
     end

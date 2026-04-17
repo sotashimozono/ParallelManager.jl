@@ -152,7 +152,8 @@ function run!(
     work_fn::Function, vault::Vault, keys::AbstractVector{DataKey}; opts::RunOpts=RunOpts()
 )
     stage = Symbol(vault.run)
-    log = EventLog(joinpath(vault.outdir, "events.jsonl"))
+    log_name = "events_$(gethostname())_$(getpid()).jsonl"
+    log = EventLog(joinpath(vault.outdir, log_name))
 
     # Early skip: load manifest, subtract completed keys
     m = load_manifest(vault)
