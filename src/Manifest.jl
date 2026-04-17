@@ -68,8 +68,7 @@ mutable struct Manifest
     complete::Set{String}
 end
 
-Manifest(stage::Symbol, root::AbstractString) =
-    Manifest(stage, String(root), Set{String}())
+Manifest(stage::Symbol, root::AbstractString) = Manifest(stage, String(root), Set{String}())
 
 """
     manifest_path(root, stage) -> String
@@ -176,5 +175,24 @@ function todo_keys(m::Manifest, keys::AbstractVector{DataKey})
     [k for k in keys if !is_complete(m, k)]
 end
 
-export Manifest, manifest_path, load_manifest, save_manifest
+"""
+    merge_and_save_manifest!(m) -> String
+
+Reload the on-disk manifest, merge its completed keys into `m`, then
+atomically persist. This prevents the "last writer wins" problem when
+multiple masters call `save_manifest` concurrently — without the merge,
+each master would overwrite the others' newly completed keys.
+
+There is a small TOCTOU window between the `load_manifest` and the
+`save_manifest`; in the worst case a concurrent saver's keys are not
+included in this write, but they will be re-processed on the next
+invocation (safe due to `is_done` re-check inside [`KeyLock`](@ref)).
+"""
+function merge_and_save_manifest!(m::Manifest)
+    on_disk = load_manifest(m.root, m.stage)
+    union!(m.complete, on_disk.complete)
+    save_manifest(m)
+end
+
+export Manifest, manifest_path, load_manifest, save_manifest, merge_and_save_manifest!
 export add_complete!, is_complete, todo_keys
