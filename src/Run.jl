@@ -14,6 +14,7 @@
 using Distributed
 using DataVault
 using ParamIO: DataKey, canonical
+using Printf: @sprintf
 
 """
     RunOpts(; workers=:auto, max_attempts=3, stale_after=600.0,
@@ -70,13 +71,40 @@ end
 # Internal: check if the stop flag has been raised.
 _is_stopped(opts::RunOpts)::Bool = opts.stop_flag !== nothing && isfile(opts.stop_flag)
 
-# Internal: per-(vault.run, key) lock directory path, keyed by
-# `canonical(key)` so multiple masters on the same vault agree on the
-# location without touching DataVault internals. Lives under the vault's
-# outdir so cleanup falls out of `rm -rf out/`.
+# Internal: per-(vault.run, key) lock directory path.
+#
+# Layout mirrors DataVault's `.running` / `.done` status tree so the
+# three per-key artefacts line up on disk:
+#
+#   locks/<project>/<run>/<param_path>/sample_<NNN>/{holder, heartbeat}
+#   status/<project>/<run>/<param_path>/sample_<NNN>.{running, done}
+#   data/<project>/<run>/<param_path>/data_sample<NNN>.jld2
+#
+# where `<param_path>` is `vault.path_formatter(key, vault.spec.path_keys)`
+# — the same compact string DataVault already uses, e.g.
+# `sysN20_syschi40_sysh0.50_strnamethrees`.  The older naming that
+# embedded the entire `canonical(key)` ("key=val;key=val;...") ran into
+# - on-disk bloat (~270 chars per dir name, ~100 chars of that was a
+#   constant prefix of non-swept params repeated for every key);
+# - ext4 ENAMETOOLONG for rich configs;
+# - visual asymmetry with the DV status tree.
+#
+# Collision model: two DataKeys that map to the same `(path_path,
+# sample)` pair also resolve to the same `.done` file in DataVault,
+# so a lock-path collision corresponds to a data-path collision that
+# DataVault itself cannot distinguish.  Users already configure
+# `path_keys` to be a unique identifier for their sweep; we inherit
+# that same invariant.
 function _key_lock_dir(vault::Vault, key::DataKey)
-    joinpath(
-        vault.outdir, "locks", vault.spec.study.project_name, vault.run, canonical(key)
+    param_path = vault.path_formatter(key, vault.spec.path_keys)
+    sample_tag = @sprintf("sample_%03d", key.sample)
+    return joinpath(
+        vault.outdir,
+        "locks",
+        vault.spec.study.project_name,
+        vault.run,
+        param_path,
+        sample_tag,
     )
 end
 
