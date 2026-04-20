@@ -18,7 +18,6 @@ independently.
 | `AtomicIO.jl`   | [`atomic_write`](@ref), [`atomic_touch`](@ref)          |
 | `EventLog.jl`   | [`EventLog`](@ref), [`log_event`](@ref)                 |
 | `Manifest.jl`   | [`Manifest`](@ref), [`load_manifest`](@ref), [`save_manifest`](@ref), [`add_complete!`](@ref), [`is_complete`](@ref), [`todo_keys`](@ref), [`manifest_path`](@ref) |
-| `KeyLock.jl`    | [`KeyLock`](@ref), [`with_key_lock`](@ref), [`try_acquire`](@ref), [`release!`](@ref), [`touch_heartbeat`](@ref), [`is_stale`](@ref), [`reclaim!`](@ref) |
 | `InitWorkers.jl`| [`init_workers!`](@ref), [`detect_mode`](@ref)          |
 | `Run.jl`        | [`run!`](@ref), [`RunOpts`](@ref), [`manifest_root`](@ref) |
 
@@ -46,15 +45,18 @@ ParallelManager.run!(work_fn, vault, keys)
 3. The `Manifest` is **monotonic** — keys are only added, never removed.
    Re-computing the same root is considered a contract violation; branch
    into a new `outdir` instead.
-4. Multi-master coordination uses `mkdir` and `rename` only — no `flock`,
-   no central service. Safe on NFS.
+4. Multi-master coordination is entirely delegated to
+   `DataVault.acquire_running!`, which uses POSIX `link()` for
+   atomic "create iff not exists" on NFS.  No `flock`, no central
+   service, no separate `locks/` tree — `.running` itself is the lock.
 
 # See also
 
 - `ParamIO.canonical` — the stable string form used by [`Manifest`](@ref)
-  and [`KeyLock`](@ref) as a directory-safe key identity.
-- `DataVault.Vault`, `DataVault.save!`, `DataVault.is_done` — the storage
-  layer [`run!`](@ref) delegates to.
+  as a directory-safe key identity.
+- `DataVault.Vault`, `DataVault.save!`, `DataVault.is_done`,
+  `DataVault.acquire_running!` — the storage + lock layer [`run!`](@ref)
+  delegates to.
 """
 module ParallelManager
 
@@ -65,7 +67,6 @@ module ParallelManager
 include("AtomicIO.jl")
 include("EventLog.jl")
 include("Manifest.jl")
-include("KeyLock.jl")
 include("InitWorkers.jl")
 include("Run.jl")
 

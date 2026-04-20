@@ -14,7 +14,6 @@
 using Distributed
 using DataVault
 using ParamIO: DataKey, canonical
-using Printf: @sprintf
 
 """
     RunOpts(; workers=:auto, max_attempts=3, stale_after=600.0,
@@ -71,42 +70,10 @@ end
 # Internal: check if the stop flag has been raised.
 _is_stopped(opts::RunOpts)::Bool = opts.stop_flag !== nothing && isfile(opts.stop_flag)
 
-# Internal: per-(vault.run, key) lock directory path.
-#
-# Layout mirrors DataVault's `.running` / `.done` status tree so the
-# three per-key artefacts line up on disk:
-#
-#   locks/<project>/<run>/<param_path>/sample_<NNN>/{holder, heartbeat}
-#   status/<project>/<run>/<param_path>/sample_<NNN>.{running, done}
-#   data/<project>/<run>/<param_path>/data_sample<NNN>.jld2
-#
-# where `<param_path>` is `vault.path_formatter(key, vault.spec.path_keys)`
-# — the same compact string DataVault already uses, e.g.
-# `sysN20_syschi40_sysh0.50_strnamethrees`.  The older naming that
-# embedded the entire `canonical(key)` ("key=val;key=val;...") ran into
-# - on-disk bloat (~270 chars per dir name, ~100 chars of that was a
-#   constant prefix of non-swept params repeated for every key);
-# - ext4 ENAMETOOLONG for rich configs;
-# - visual asymmetry with the DV status tree.
-#
-# Collision model: two DataKeys that map to the same `(path_path,
-# sample)` pair also resolve to the same `.done` file in DataVault,
-# so a lock-path collision corresponds to a data-path collision that
-# DataVault itself cannot distinguish.  Users already configure
-# `path_keys` to be a unique identifier for their sweep; we inherit
-# that same invariant.
-function _key_lock_dir(vault::Vault, key::DataKey)
-    param_path = vault.path_formatter(key, vault.spec.path_keys)
-    sample_tag = @sprintf("sample_%03d", key.sample)
-    return joinpath(
-        vault.outdir,
-        "locks",
-        vault.spec.study.project_name,
-        vault.run,
-        param_path,
-        sample_tag,
-    )
-end
+# As of v0.3 the per-key lock lives ENTIRELY in DataVault's `.running`
+# sentinel — acquired atomically via `DataVault.acquire_running!`
+# (implemented with POSIX `link()`).  There is no longer a separate
+# `locks/` directory tree maintained by this package.
 
 """
     manifest_root(vault) -> String
@@ -256,12 +223,13 @@ end
 """
     _run_one_with_lock!(work_fn, vault, key, stage, log, opts) -> (DataKey, Symbol)
 
-Execute the per-key pipeline: acquire the KeyLock, re-check completion,
-`mark_running!`, then `_run_one_with_retry!`.  Returns a `(key, outcome)`
-pair suitable for aggregation by the caller.
+Execute the per-key pipeline: atomic-acquire via
+`DataVault.acquire_running!`, re-check completion, run work_fn with a
+background heartbeat task, and release on exit.  Returns a
+`(key, outcome)` pair suitable for aggregation by the caller.
 
 Outcome symbols:
-- `:lock_busy`    — another master holds the lock, skipped.
+- `:lock_busy`    — another master holds a fresh `.running`, skipped.
 - `:already_done` — finished by a sibling master between the manifest
                     read and the lock acquisition.
 - `:ok`           — `work_fn` succeeded and `mark_done!` was called.
@@ -285,49 +253,59 @@ function _run_one_with_lock!(
         return (key, :stop)
     end
 
-    klock = KeyLock(
-        _key_lock_dir(vault, key);
-        stale_after=opts.stale_after,
-        heartbeat_interval=opts.heartbeat_interval,
-    )
-
-    outcome = with_key_lock(klock) do
-        if DataVault.is_done(vault, key)
-            return :already_done
-        end
-        DataVault.mark_running!(vault, key)
-        # Background task: update .running heartbeat at the same interval
-        # as the KeyLock heartbeat so cleanup_stale can detect live jobs.
-        running_stop = Threads.Atomic{Bool}(false)
-        running_hb = Threads.@spawn begin
-            tick = 0.1
-            elapsed = 0.0
-            while !running_stop[]
-                sleep(tick)
-                running_stop[] && break
-                elapsed += tick
-                if elapsed >= opts.heartbeat_interval
-                    DataVault.touch_running!(vault, key)
-                    elapsed = 0.0
-                end
-            end
-        end
-        try
-            return _run_one_with_retry!(work_fn, vault, key, kstr, stage, log, opts)
-        finally
-            running_stop[] = true
-            try
-                wait(running_hb)
-            catch
-            end
-            DataVault.clear_running!(vault, key)
-        end
-    end
-
-    if outcome === nothing
+    # DataVault owns the lock file.  `acquire_running!` is atomic on
+    # NFS via POSIX `link()`: concurrent masters see at most one
+    # `:ok` / `:reclaimed`; the losers see `:busy`.
+    acq = DataVault.acquire_running!(vault, key; stale_after=opts.stale_after)
+    if acq === :busy
         log_event(log, :lock_busy; stage=stage, key=kstr)
         return (key, :lock_busy)
     end
+    # acq ∈ (:ok, :reclaimed) — we own the lock.
+
+    # Re-check after acquisition: another master may have finished this
+    # key between our manifest read and our acquire.
+    if DataVault.is_done(vault, key)
+        DataVault.clear_running!(vault, key)
+        return (key, :already_done)
+    end
+
+    # Background heartbeat task: periodically refresh `.running` so
+    # `DataVault.cleanup_stale` / sibling `acquire_running!` callers
+    # recognise us as alive.  The `Threads.Atomic{Bool}` flag makes
+    # the stop signal thread-safe; a short sleep tick keeps finally
+    # cleanup responsive (the earlier fixed 60-s sleep would block the
+    # whole shutdown until the next heartbeat tick).
+    hb_stop = Threads.Atomic{Bool}(false)
+    hb_task = Threads.@spawn begin
+        tick = 0.1
+        elapsed = 0.0
+        while !hb_stop[]
+            sleep(tick)
+            hb_stop[] && break
+            elapsed += tick
+            if elapsed >= opts.heartbeat_interval
+                DataVault.refresh_running!(vault, key)
+                elapsed = 0.0
+            end
+        end
+    end
+
+    outcome = try
+        _run_one_with_retry!(work_fn, vault, key, kstr, stage, log, opts)
+    finally
+        hb_stop[] = true
+        try
+            wait(hb_task)
+        catch
+        end
+        # On `:ok` `mark_done!` already removed `.running`; on any
+        # other outcome, release explicitly so the key is immediately
+        # retriable by a sibling master without waiting for
+        # `stale_after` to elapse.  `clear_running!` is idempotent.
+        DataVault.clear_running!(vault, key)
+    end
+
     return (key, outcome)
 end
 

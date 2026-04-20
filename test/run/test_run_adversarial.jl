@@ -12,6 +12,7 @@
 
 using ParallelManager, Test, DataVault, ParamIO, JSON3, JLD2
 using Distributed
+using Dates
 
 const FIXTURE_CFG_A = joinpath(@__DIR__, "fixtures", "study.toml")
 
@@ -72,15 +73,30 @@ end
         keys = allk_a(v)
         target = keys[1]
 
-        # Simulate a crashed prior run: .running exists but no .done
+        # Simulate a crashed prior run with an OLD heartbeat: `.running`
+        # exists but its `heartbeat=` line predates any sane stale_after
+        # threshold.  Post-v0.3 PM delegates locking to
+        # `DataVault.acquire_running!`, which treats a fresh `.running`
+        # as `:busy` (correct) and a stale one as reclaimable —
+        # exactly the crashed-run recovery path.
         DataVault.mark_running!(v, target)
+        running_path = DataVault._running_file(v, target)
+        old_str = Dates.format(Dates.now() - Dates.Second(7200), "yyyy-mm-ddTHH:MM:SS")
+        lines = readlines(running_path)
+        open(running_path, "w") do io
+            for line in lines
+                println(io, startswith(line, "heartbeat=") ? "heartbeat=$old_str" : line)
+            end
+        end
         @test DataVault.is_running(v, target)
         @test !DataVault.is_done(v, target)
+        @test DataVault.running_age_secs(v, target) > 600
 
-        # New run should still process this key (try-finally guards ensure
-        # clear_running! is always called)
+        # New run with a modest stale_after reclaims the stale .running
+        # via acquire_running! and completes the key.
         work_fn = k -> Dict{String,Any}("x" => 1)
-        result = run!(work_fn, v, keys)
+        opts = RunOpts(; stale_after=600.0)
+        result = run!(work_fn, v, keys; opts=opts)
         @test result.done == length(keys)
         @test DataVault.is_done(v, target)
         # .running must be cleaned up
@@ -115,29 +131,15 @@ end
 # 4. KeyLock: stale reclaim when holder died before first heartbeat
 # ═════════════════════════════════════════════════════════════════════════════
 
-@testset "KeyLock: reclaim of a stale lock without heartbeat file" begin
-    mktempdir() do dir
-        # Simulate a dead holder: acquired the lock (mkdir) but died before
-        # the first heartbeat touch → no heartbeat file inside.
-        lock_dir = joinpath(dir, "k")
-        l = KeyLock(lock_dir; stale_after=0.01, heartbeat_interval=0.005)
-
-        # Manually create lock dir without heartbeat (dead holder state)
-        mkdir(lock_dir)
-        write(joinpath(lock_dir, "holder"), "ghost:9999")
-        # No heartbeat file → is_stale should fall back to dir mtime
-
-        sleep(0.05)  # Wait beyond stale_after
-        @test is_stale(l) == true
-
-        # Another contender should be able to reclaim + acquire
-        @test try_acquire(l) == true
-        @test isdir(lock_dir)
-        # heartbeat file should now exist (fresh acquisition)
-        @test isfile(joinpath(lock_dir, "heartbeat"))
-        release!(l)
-    end
-end
+# ═════════════════════════════════════════════════════════════════════════════
+# 4. Atomic .running reclaim: DataVault.acquire_running! is the lock primitive
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Post-v0.3 PM delegates locking entirely to `DataVault.acquire_running!`
+# (POSIX link()).  The equivalent "stale holder that crashed before first
+# heartbeat" case is now covered in `test_run_kill_recovery.jl` and in
+# DataVault's own test/vault/test_vault.jl "acquire_running!" testsets,
+# so the KeyLock-specific legacy case here has been removed.
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 5. Multi-task race with VERY short heartbeat interval
