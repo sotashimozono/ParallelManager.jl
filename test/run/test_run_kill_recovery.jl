@@ -39,7 +39,9 @@ end
 allk_k(v) = ParamIO.expand(v.spec)
 
 "Fabricate a stale `.running` file whose heartbeat is `age_secs` old."
-function _fabricate_stale_running!(vault::DataVault.Vault, key::DataVault.DataKey; age_secs::Real=3600)
+function _fabricate_stale_running!(
+    vault::DataVault.Vault, key::DataVault.DataKey; age_secs::Real=3600
+)
     DataVault.mark_running!(vault, key)
     path = ParallelManager.DataVault._running_file(vault, key)
     old_dt = Dates.now() - Dates.Second(round(Int, age_secs))
@@ -61,7 +63,9 @@ to backdate the mtime — this is Linux-specific but matches the target
 platform (ISSP System B / Ubuntu dev boxes) and avoids the
 `sleep(stale_after)` anti-pattern in tests.
 """
-function _fabricate_stale_lock!(vault::DataVault.Vault, key::DataVault.DataKey; age_secs::Real=3600)
+function _fabricate_stale_lock!(
+    vault::DataVault.Vault, key::DataVault.DataKey; age_secs::Real=3600
+)
     lockdir = ParallelManager._key_lock_dir(vault, key)
     mkpath(lockdir)
     holder = joinpath(lockdir, "holder")
@@ -97,7 +101,7 @@ end
         @test !occursin('=', rel)              # no canonical(key) k=v form
         @test occursin("sample_", parts[end])  # trailing sample_NNN
         @test length(rel) < 120                # drastically shorter than the
-                                               # ~270-char canonical form
+        # ~270-char canonical form
     end
 end
 
