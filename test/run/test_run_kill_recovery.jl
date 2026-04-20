@@ -111,9 +111,7 @@ end
         end
 
         work_fn = k -> Dict{String,Any}("sample" => k.sample)
-        opts = ParallelManager.RunOpts(;
-            stale_after=60.0, heartbeat_interval=5.0
-        )
+        opts = ParallelManager.RunOpts(; stale_after=60.0, heartbeat_interval=5.0)
         result = run!(work_fn, v, keys; opts=opts)
 
         @test result.done == length(keys)
