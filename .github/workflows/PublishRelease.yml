@@ -22,6 +22,13 @@ on:
 
 permissions:
   contents: write
+  # `build_release_notes.py` reads merged PRs through `gh pr list --search`, which resolves over
+  # the GraphQL search connection and needs this scope. A `permissions:` block is a REPLACEMENT,
+  # not an addition — every scope left unlisted is set to `none` — so `contents: write` alone left
+  # the job with no read access to pull requests, and every node came back as
+  # `Resource not accessible by integration (search.nodes.0)`. `gh` then exits 1 and the job dies
+  # at `Build release notes`, before `gh release edit` can ever overwrite the drafter's body.
+  pull-requests: read
 
 jobs:
   publish:
