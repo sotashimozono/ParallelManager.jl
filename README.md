@@ -91,6 +91,7 @@ path builders that leak phase1's storage layout into phase2's code.
 | [`src/KeyLock.jl`](src/KeyLock.jl) | `mkdir` advisory lock + heartbeat + stale reclaim |
 | [`src/InitWorkers.jl`](src/InitWorkers.jl) | Unified `:auto` / `:sequential` / `:threads` / `:distributed` / `:slurm` bootstrap |
 | [`src/Run.jl`](src/Run.jl) | `run!(work_fn, vault, keys; opts)` facade that ties everything to `DataVault` |
+| [`src/Preflight.jl`](src/Preflight.jl) | `check_injective!` / `check_opens!` / `on_grid` — refuse a campaign *before* it burns compute |
 
 Each module is one file, one concern. They can be used independently
 (e.g. `atomic_write` + `EventLog` without `run!`).

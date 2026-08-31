@@ -69,5 +69,6 @@ include("EventLog.jl")
 include("Manifest.jl")
 include("InitWorkers.jl")
 include("Run.jl")
+include("Preflight.jl")
 
 end # module ParallelManager
