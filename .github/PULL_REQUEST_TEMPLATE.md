@@ -1,6 +1,6 @@
 <!--
 The two sections "Proposed Changes" and "Usage or Results" below are
-extracted by .github/scripts/build_release_notes.py and inserted into
+extracted by QAtlasHub/.github/actions/release-notes and inserted into
 the GitHub Release notes when a new tag is published. Treat them as the
 PR's contribution to the changelog: keep them readable, focused, and
 self-contained. Renaming or removing those headings will break the
