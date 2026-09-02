@@ -38,7 +38,5 @@ makedocs(;
 )
 
 deploydocs(;
-    repo="github.com/QAtlasHub/ParallelManager.jl.git",
-    devbranch="main",
-    push_preview=true,
+    repo="github.com/QAtlasHub/ParallelManager.jl.git", devbranch="main", push_preview=true
 )
