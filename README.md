@@ -111,22 +111,14 @@ Built from direct experience with the old-style HPC loop pattern used in
 
 ## Installation
 
-This package depends on `ParamIO.jl` and `DataVault.jl`. During the
-pre-registry phase, use `[sources]` with git URLs:
-
-```toml
-[deps]
-DataVault       = "23f5f8f6-b4da-40ee-8c72-c53b6c5de94f"
-ParallelManager = "be946ad2-3cb3-4b6e-8f7e-4a5ecc3c255b"
-ParamIO         = "938a3ac2-d340-473c-bcf1-88af577e4ccf"
-
-[sources]
-ParamIO         = {url = "https://github.com/QAtlasHub/ParamIO.jl.git"}
-DataVault       = {url = "https://github.com/QAtlasHub/DataVault.jl.git"}
-ParallelManager = {url = "https://github.com/QAtlasHub/ParallelManager.jl.git"}
+```julia
+pkg> add ParallelManager
 ```
 
-Then `julia --project -e 'using Pkg; Pkg.instantiate()'`.
+Its dependencies `ParamIO.jl` and `DataVault.jl` are in the General registry too, so nothing
+needs a `[sources]` entry.
+
+Requires Julia v1.11+.
 
 ## Tests
 
