@@ -1,7 +1,6 @@
 # ParallelManager.jl
 
-[![docs: stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://codes.sota-shimozono.com/ParallelManager.jl/stable/)
-[![docs: dev](https://img.shields.io/badge/docs-dev-purple.svg)](https://codes.sota-shimozono.com/ParallelManager.jl/dev/)
+[![docs: dev](https://img.shields.io/badge/docs-dev-purple.svg)](https://qatlashub.github.io/ParallelManager.jl/dev/)
 [![Julia](https://img.shields.io/badge/julia-v1.11+-9558b2.svg)](https://julialang.org)
 [![Code Style: Blue](https://img.shields.io/badge/Code%20Style-Blue-4495d1.svg)](https://github.com/invenia/BlueStyle)
 
@@ -23,9 +22,12 @@ survives kills, and logs what happened.
 ## Highlights
 
 - **Multi-master safe** — several `julia` processes can hit the same vault
-  root without double-executing any key (mkdir-based advisory lock).
-- **Crash recovery** — `kill -9` a master mid-run and the next `run!` picks
-  up where it left off via heartbeat-based stale lock reclaim.
+  root without double-executing any key. Locking is delegated to
+  `DataVault.acquire_running!`, which uses POSIX `link()` for an atomic
+  "create iff not exists" that works on NFS — the `.running` marker is the lock.
+- **Crash recovery** — `kill -9` a master mid-run and the next `run!` picks up
+  where it left off: `DataVault` writes a heartbeat into `.running`, and
+  `cleanup_stale` reclaims markers whose heartbeat has gone cold.
 - **Early skip** — full-done re-runs take O(1) filesystem operations
   (a single `manifest.jld2` read), not O(N) per-key `.done` stats.
   Benchmark: 3600 keys warm re-run ≈ 3.5 ms.
@@ -88,7 +90,6 @@ path builders that leak phase1's storage layout into phase2's code.
 | [`src/AtomicIO.jl`](src/AtomicIO.jl) | `atomic_write` / `atomic_touch` — tmp + fsync + POSIX rename, NFS-safe |
 | [`src/EventLog.jl`](src/EventLog.jl) | JSONL structured log, single-write atomic lines for concurrent appends |
 | [`src/Manifest.jl`](src/Manifest.jl) | Stage-level rollup of `canonical(key)` strings for O(1) early-skip |
-| [`src/KeyLock.jl`](src/KeyLock.jl) | `mkdir` advisory lock + heartbeat + stale reclaim |
 | [`src/InitWorkers.jl`](src/InitWorkers.jl) | Unified `:auto` / `:sequential` / `:threads` / `:distributed` / `:slurm` bootstrap |
 | [`src/Run.jl`](src/Run.jl) | `run!(work_fn, vault, keys; opts)` facade that ties everything to `DataVault` |
 
@@ -105,7 +106,7 @@ Built from direct experience with the old-style HPC loop pattern used in
 | `.done` files rescanned every job (3600 files, ~10 min) | `Manifest` rollup, one JLD2 read (< 10 ms) |
 | 300 MB of per-item `println` logs | `EventLog` (JSONL), per-item `println` is not part of the API |
 | Killed samples silently wedge the queue | Heartbeat + `is_stale` + `reclaim!` auto-recover on next run |
-| Multiple masters double-execute the same key | `KeyLock` (`mkdir` advisory) + post-lock `is_done` re-check |
+| Multiple masters double-execute the same key | `DataVault.acquire_running!` (POSIX `link()`) + post-lock `is_done` re-check |
 | Half-written JLD2 files after crash | `atomic_write` (tmp + fsync + rename) |
 | Every project reinvents SLURM / Distributed bootstrap | `init_workers!(mode=:auto)` absorbs the pattern |
 
@@ -127,7 +128,6 @@ Requires Julia v1.11+.
 - `atomicio/` — atomic write, exception cleanup, concurrent writers
 - `eventlog/` — JSON roundtrip, 50-task × 40-event concurrent write
 - `manifest/` — save/load, `todo_keys`, 3600-key bench, corrupted file
-- `keylock/` — basic mutex, heartbeat, stale reclaim, mutual exclusion under contention
 - `init_workers/` — `:auto`, `:sequential`, `:threads`, `:slurm` env reading
 - `run/` — minimal, manifest early-skip, 4-master keylock race, retry, gave_up
 
@@ -135,7 +135,6 @@ Requires Julia v1.11+.
 
 - [ParamIO.jl](https://github.com/QAtlasHub/ParamIO.jl) — config TOML parsing and `DataKey` enumeration
 - [DataVault.jl](https://github.com/QAtlasHub/DataVault.jl) — `Vault` struct, atomic JLD2 save, `.done` markers
-- [templateHPC.jl](https://github.com/sotashimozono/templateHPC.jl) — clone-to-start scaffold that wires all three together
 
 ## License
 

@@ -1,26 +1,8 @@
 name: Format Check
-on:
-  pull_request:
-    paths: ['**/*.jl']
 
-jobs:
-  format-check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: julia-actions/setup-julia@v3
-        with:
-          version: '1'
-      - name: Install JuliaFormatter
-        run: julia -e 'using Pkg; Pkg.add(name="JuliaFormatter", version="2"); using JuliaFormatter; @info "JuliaFormatter $(pkgversion(JuliaFormatter))"'
-      - name: Check formatting
-        run: |
-          julia -e '
-            using JuliaFormatter
-            ok = format(".", verbose=true, overwrite=false)
-            if !ok
-              println(stderr, "❌ Formatting issues found. Run JuliaFormatter locally: julia -e \"using JuliaFormatter; format(\\\".\\\")\"")
-              exit(1)
-            end
-            println("✅ All files are properly formatted.")
-          '
+# No `paths:` filter. A filtered required check never runs on a pull request that touches no
+# `.jl` file, and a required check that never runs stays pending forever — the pull request
+# becomes unmergeable rather than exempt. This repository's `main` requires no status checks
+# today, so the filter costs nothing yet; it would cost everything the day one is added.
+on: { pull_request: {} }
+jobs: { format: { uses: QAtlasHub/.github/.github/workflows/format-check.yml@main } }

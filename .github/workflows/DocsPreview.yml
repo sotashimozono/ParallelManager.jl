@@ -1,0 +1,16 @@
+name: Docs Preview
+
+# Split out of Documentation.yml, which used to build the live site and post the PR preview
+# comment in one job. The reusable pair separates them because the deploy runs on `main` and the
+# preview runs on a pull request, and the two need different permissions.
+#
+# `preview-base` is set explicitly: the reusable defaults to `codes.sota-shimozono.com`, which
+# does not resolve, whereas this repository's docs are served from GitHub Pages. The link the
+# comment posts has to be one a reviewer can click.
+on: { pull_request: {} }
+jobs:
+  preview:
+    uses: QAtlasHub/.github/.github/workflows/docs-preview.yml@main
+    with:
+      preview-base: 'https://qatlashub.github.io'
+    secrets: inherit
