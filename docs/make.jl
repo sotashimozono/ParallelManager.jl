@@ -13,7 +13,7 @@ Downloads.download("https://github.com/sotashimozono.png", logo_path)
 makedocs(;
     sitename="ParallelManager.jl",
     format=Documenter.HTML(;
-        canonical="https://codes.sota-shimozono.com/ParallelManager.jl/stable/",
+        canonical="https://qatlashub.github.io/ParallelManager.jl/dev/",
         prettyurls=get(ENV, "CI", "false") == "true",
         mathengine=MathJax3(
             Dict(
